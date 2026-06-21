@@ -440,9 +440,9 @@ function showSelInfo(s) {
     html += `<div class="row"><label>文字</label><input id="iTxt" value="${(s.text || "").replace(/"/g, "&quot;")}"></div>`;
   } else {
     html += `<div class="row"><label>名称</label><input id="iName" value="${(s.name || "").replace(/"/g, "&quot;")}" placeholder="(任意)"></div>`;
-    html += `<div class="row"><label>幅</label><input id="iW" value="${Math.round(mm(s.w) || 0)}"> <span style="color:var(--muted)">mm</span></div>`;
+    html += `<div class="row"><label>幅</label><input id="iW" type="number" inputmode="decimal" step="10" value="${Math.round(mm(s.w) || 0)}"> <span style="color:var(--muted)">mm</span></div>`;
     if (s.type !== "door")
-      html += `<div class="row"><label>奥行</label><input id="iH" value="${Math.round(mm(s.h) || 0)}"> <span style="color:var(--muted)">mm</span></div>`;
+      html += `<div class="row"><label>奥行</label><input id="iH" type="number" inputmode="decimal" step="10" value="${Math.round(mm(s.h) || 0)}"> <span style="color:var(--muted)">mm</span></div>`;
     html += `<div class="row"><label>角度</label><span>${Math.round(s.rot || 0)}°</span></div>`;
   }
   body.innerHTML = html;
@@ -683,6 +683,8 @@ function handleMeasureClick(pt) {
    ====================================================================== */
 function onDown(e) {
   if (e.button === 2) return;
+  // 右上の選択パネル（入力欄・ボタン）上の操作はキャンバス処理の対象外にする
+  if (e.target.closest && e.target.closest("#selInfo")) return;
   activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   // 指が2本になったらピンチ（拡大縮小＋2本指パン）に切替。進行中の操作は中断
   if (activePointers.size >= 2) {

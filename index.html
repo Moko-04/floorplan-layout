@@ -86,7 +86,10 @@
     position:absolute; right:14px; top:14px; width:230px;
     background:var(--panel); border:1px solid var(--line); border-radius:10px;
     padding:12px; font-size:12px; display:none; z-index:5;
+    /* パネル内はタッチで操作・入力できるようにする（viewportのnone指定を打消し） */
+    touch-action:auto; -webkit-user-select:auto; user-select:auto;
   }
+  #selInfo input{ -webkit-user-select:text; user-select:text; touch-action:auto; }
   #selInfo h4{margin:0 0 8px; font-size:12px; color:var(--muted); font-weight:600; letter-spacing:.04em;}
   #selInfo .row{display:flex; align-items:center; gap:6px; margin-bottom:6px;}
   #selInfo .row label{width:54px; color:var(--muted)}
