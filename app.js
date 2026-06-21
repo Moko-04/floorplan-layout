@@ -81,6 +81,8 @@ const hint = $("hint");
 let drag = null;          // {mode, ...}
 let measure = null;       // 縮尺合わせ/計測 {p1, cur, forScale}
 let spaceDown = false;
+const activePointers = new Map(); // pointerId -> {x,y}（マルチタッチ判定用）
+let pinch = null;         // ピンチ拡大/2本指パンの基準
 
 /* ======================================================================
    ユーティリティ
@@ -680,6 +682,14 @@ function handleMeasureClick(pt) {
    ====================================================================== */
 function onDown(e) {
   if (e.button === 2) return;
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  // 指が2本になったらピンチ（拡大縮小＋2本指パン）に切替。進行中の操作は中断
+  if (activePointers.size >= 2) {
+    drag = null; pinch = null;
+    viewport.classList.remove("panning");
+    pinchUpdate();
+    return;
+  }
   const panMode = e.button === 1 || spaceDown || state.tool === "pan";
   const raw = screenToWorld(e.clientX, e.clientY);
 
@@ -745,6 +755,8 @@ function onDown(e) {
 }
 
 function onMove(e) {
+  if (activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (activePointers.size >= 2) { pinchUpdate(); return; }
   const raw = screenToWorld(e.clientX, e.clientY);
   // ステータスのカーソル座標
   if (state.mmPerPx) $("cursorStat").textContent = `X ${fmtMM(mm(raw.x))} , Y ${fmtMM(mm(raw.y))}`;
@@ -777,7 +789,15 @@ function onMove(e) {
   }
 }
 
-function onUp() {
+function onUp(e) {
+  if (e && activePointers.has(e.pointerId)) activePointers.delete(e.pointerId);
+  // まだ指が残っている（ピンチ→1本指へ移行中など）なら通常処理はせず基準を取り直す
+  if (activePointers.size >= 1) {
+    pinch = null; drag = null;
+    viewport.classList.remove("panning");
+    return;
+  }
+  pinch = null;
   if (drag) {
     if (drag.mode === "draw") { commitDraw(); setTool("select"); }
     else if (drag.mode === "marquee") { finishMarquee(); }
@@ -786,6 +806,26 @@ function onUp() {
   viewport.classList.remove("panning");
   drag = null;
   updateStatus();
+}
+
+/* 2本指ピンチ：拡大縮小＋同時パン。最初の呼び出しで基準を記録する */
+function pinchUpdate() {
+  const pts = [...activePointers.values()];
+  if (pts.length < 2) return;
+  const a = pts[0], b = pts[1];
+  const dist = Math.hypot(b.x - a.x, b.y - a.y);
+  const midX = (a.x + b.x) / 2, midY = (a.y + b.y) / 2;
+  if (!pinch) { pinch = { dist: dist || 1, midX, midY, zoom: state.zoom, panX: state.panX, panY: state.panY }; return; }
+  const r = viewport.getBoundingClientRect();
+  const factor = dist / pinch.dist;
+  const newZoom = Math.min(8, Math.max(0.05, pinch.zoom * factor));
+  // ピンチ開始時の中点の下にあるワールド座標を、現在の中点に保ち続ける
+  const wx = (pinch.midX - r.left - pinch.panX) / pinch.zoom;
+  const wy = (pinch.midY - r.top - pinch.panY) / pinch.zoom;
+  state.zoom = newZoom;
+  state.panX = midX - r.left - wx * newZoom;
+  state.panY = midY - r.top - wy * newZoom;
+  applyTransform();
 }
 
 function rectsIntersect(a, b) {
@@ -975,6 +1015,7 @@ function wire() {
   viewport.addEventListener("pointerdown", onDown);
   document.addEventListener("pointermove", onMove);
   document.addEventListener("pointerup", onUp);
+  document.addEventListener("pointercancel", onUp);
   viewport.addEventListener("dblclick", onDblClick);
   viewport.addEventListener("contextmenu", (e) => e.preventDefault());
 

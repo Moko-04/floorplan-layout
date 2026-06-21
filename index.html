@@ -2,7 +2,10 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1f2430">
 <title>図面レイアウト — 簡易店内造作CAD</title>
 <style>
   :root{
@@ -49,6 +52,8 @@
       linear-gradient(-45deg,transparent 75%,#171b25 75%);
     background-size:24px 24px; background-position:0 0,0 12px,12px -12px,-12px 0;
     cursor:crosshair;
+    touch-action:none;            /* スマホ：ブラウザの既定ジェスチャを無効化しタッチ操作を取得 */
+    -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent;
   }
   #viewport.pan{cursor:grab}
   #viewport.panning{cursor:grabbing}
@@ -94,6 +99,26 @@
   .toast.show{opacity:1}
   .toast.warn{background:var(--warn); color:#1f2430}
   kbd{background:#11141c; border:1px solid var(--line); border-radius:4px; padding:1px 6px; font-size:11px}
+  /* ---- スマホ・タブレット対応 ---- */
+  @media (max-width:820px){
+    .toolbar{
+      flex-wrap:nowrap; overflow-x:auto; -webkit-overflow-scrolling:touch;
+      padding:6px 8px; scrollbar-width:thin;
+    }
+    .toolbar::-webkit-scrollbar{height:5px}
+    .toolbar::-webkit-scrollbar-thumb{background:var(--line); border-radius:3px}
+    .group{flex:0 0 auto; padding:0 5px;}
+    button,.filebtn,select{padding:9px 11px; font-size:13px;}   /* タップしやすく */
+    button.tool{min-width:42px;}
+    #selInfo{width:48vw; min-width:170px; max-width:240px; right:8px; top:8px; padding:10px;}
+    .status{font-size:11px; gap:10px; padding:6px 10px;}
+    .status .keyhint{display:none;}     /* PC向けキー説明はスマホで隠す */
+    #hint .card{padding:20px 22px; font-size:14px; line-height:1.8;}
+  }
+  /* マウスが無い（タッチ主体）端末ではホバー枠を出さない */
+  @media (hover:none){
+    button:hover,.filebtn:hover,select:hover{border-color:var(--line)}
+  }
 </style>
 </head>
 <body>
@@ -188,7 +213,8 @@
         ① <b>「PDFを開く」</b>で図面を読み込む<br>
         ② <b>「縮尺合わせ」</b>で既知の寸法を2点クリック→実寸を入力<br>
         ③ 什器を選んで配置、矩形・壁を描いて造作レイアウト<br>
-        <span style="font-size:12px;color:var(--muted)">※ PDFが無くても、縮尺を「1000mm」などで仮設定すれば白紙から作図できます</span>
+        <span style="font-size:12px;color:var(--muted)">※ PDFが無くても、縮尺を「1000mm」などで仮設定すれば白紙から作図できます<br>
+        📱 スマホ：2本指でピンチ拡大・スクロール／1本指で選択・移動。✋ツールで画面移動</span>
       </div>
     </div>
 
@@ -199,7 +225,7 @@
     <span id="scaleStat" class="scaleNo">縮尺：未設定</span>
     <span class="pill" id="cursorStat">— , —</span>
     <span id="countStat">オブジェクト：0</span>
-    <span style="margin-left:auto">操作：<kbd>ホイール</kbd>拡縮 / <kbd>Space+ドラッグ</kbd>移動 / <kbd>Ctrl+Z</kbd>戻す / <kbd>Ctrl+D</kbd>複製 / <kbd>Shift+クリック</kbd>追加選択 / <kbd>ドラッグ</kbd>範囲選択 / <kbd>Del</kbd>削除</span>
+    <span class="keyhint" style="margin-left:auto">操作：<kbd>ホイール</kbd>拡縮 / <kbd>Space+ドラッグ</kbd>移動 / <kbd>Ctrl+Z</kbd>戻す / <kbd>Ctrl+D</kbd>複製 / <kbd>Shift+クリック</kbd>追加選択 / <kbd>ドラッグ</kbd>範囲選択 / <kbd>Del</kbd>削除</span>
   </div>
 
   <!-- pdf.js（ローカル同梱：CDN不要・オフライン可・Worker制約も回避） -->
