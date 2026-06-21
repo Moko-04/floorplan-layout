@@ -56,10 +56,17 @@ const state = {
   panY: 0,
   tool: "select",
   shapes: [],
-  selectedId: null,
+  selectedIds: [],
   gridMm: 100,
   nextId: 1,
 };
+
+/* ---- Undo/Redo 履歴 ---- */
+const history = { stack: [], index: -1 };
+/* ---- コピー&ペースト用クリップボード ---- */
+let clipboard = [];
+/* ---- localStorage 自動保存キー ---- */
+const LS_KEY = "floorplan_autosave_v1";
 
 /* ---- DOM ---- */
 const $ = (id) => document.getElementById(id);
@@ -100,7 +107,14 @@ function fmtMM(v) {
   if (v == null) return "—";
   return Math.round(v).toLocaleString("ja-JP") + "mm";
 }
-function getSel() { return state.shapes.find((s) => s.id === state.selectedId) || null; }
+function getSelected() { return state.shapes.filter((s) => state.selectedIds.includes(s.id)); }
+function getSel() { return state.selectedIds.length === 1 ? (state.shapes.find((s) => s.id === state.selectedIds[0]) || null) : null; }
+function isSelected(id) { return state.selectedIds.includes(id); }
+function selectOnly(id) { state.selectedIds = id == null ? [] : [id]; }
+function toggleSel(id) { const i = state.selectedIds.indexOf(id); if (i >= 0) state.selectedIds.splice(i, 1); else state.selectedIds.push(id); }
+function clearSelection() { state.selectedIds = []; }
+function selectAll() { state.selectedIds = state.shapes.map((s) => s.id); render(); }
+function snapshotGeoms() { const m = {}; for (const s of getSelected()) m[s.id] = cloneGeom(s); return m; }
 function bbox(s) {
   if (s.type === "line") {
     return { x: Math.min(s.x1, s.x2), y: Math.min(s.y1, s.y2),
@@ -249,9 +263,19 @@ function render() {
   /* 縮尺合わせ / 計測 */
   if (measure) renderMeasure(sw, fs);
 
+  /* 範囲選択（マーキー） */
+  if (drag && drag.mode === "marquee") renderMarquee();
+
   /* 選択ハンドル */
-  const sel = getSel();
-  if (sel) renderSelection(sel, z);
+  const sellist = getSelected();
+  if (sellist.length === 1) {
+    renderSelection(sellist[0], z);
+  } else if (sellist.length > 1) {
+    for (const s of sellist) renderSelectionOutline(s, z);
+    hideSelInfo();
+  } else {
+    hideSelInfo();
+  }
 }
 
 function shapeColor(s) { return s.color || "#4f8cff"; }
@@ -381,6 +405,24 @@ function renderSelection(s, z) {
   showSelInfo(s);
 }
 
+/* 複数選択時の枠だけ（ハンドルなし） */
+function renderSelectionOutline(s, z) {
+  const b = bbox(s), ctr = center(s);
+  const g = svgEl("g", {});
+  if (s.rot) g.setAttribute("transform", `rotate(${s.rot} ${ctr.x} ${ctr.y})`);
+  g.appendChild(svgEl("rect", { x: b.x, y: b.y, width: b.w, height: b.h, fill: "rgba(79,140,255,.10)",
+    stroke: "#4f8cff", "stroke-width": 1.2 / z, "stroke-dasharray": `${4 / z} ${3 / z}`, "pointer-events": "none" }));
+  overlay.appendChild(g);
+}
+
+/* 範囲選択のラバーバンド */
+function renderMarquee() {
+  const a = drag.start, b = drag.cur;
+  const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y);
+  overlay.appendChild(svgEl("rect", { x, y, width: w, height: h, fill: "rgba(79,140,255,.12)",
+    stroke: "#4f8cff", "stroke-width": 1 / state.zoom, "stroke-dasharray": `${4 / state.zoom} ${3 / state.zoom}`, "pointer-events": "none" }));
+}
+
 /* ======================================================================
    選択パネル
    ====================================================================== */
@@ -407,16 +449,16 @@ function showSelInfo(s) {
     const sw = document.createElement("div");
     sw.className = "sw" + (shapeColor(s) === col ? " sel" : "");
     sw.style.background = col;
-    sw.onclick = () => { s.color = col; render(); };
+    sw.onclick = () => { s.color = col; render(); pushHistory(); };
     cr.appendChild(sw);
   }
 
   // 入力 → 反映
-  const bindNum = (id, apply) => { const e = $(id); if (e) e.onchange = () => { const v = parseFloat(e.value); if (!isNaN(v) && state.mmPerPx) { apply(v / state.mmPerPx); render(); } }; };
+  const bindNum = (id, apply) => { const e = $(id); if (e) e.onchange = () => { const v = parseFloat(e.value); if (!isNaN(v) && state.mmPerPx) { apply(v / state.mmPerPx); render(); pushHistory(); } }; };
   bindNum("iW", (px) => { s.w = px; });
   bindNum("iH", (px) => { s.h = px; });
-  const nm = $("iName"); if (nm) nm.onchange = () => { s.name = nm.value; render(); };
-  const tx = $("iTxt"); if (tx) tx.onchange = () => { s.text = tx.value; render(); };
+  const nm = $("iName"); if (nm) nm.onchange = () => { s.name = nm.value; render(); pushHistory(); };
+  const tx = $("iTxt"); if (tx) tx.onchange = () => { s.text = tx.value; render(); pushHistory(); };
 }
 function hideSelInfo() { $("selInfo").style.display = "none"; }
 
@@ -427,8 +469,9 @@ function addShape(s) {
   s.id = state.nextId++;
   if (!s.color) s.color = "#4f8cff";
   state.shapes.push(s);
-  state.selectedId = s.id;
+  selectOnly(s.id);
   render(); updateStatus();
+  pushHistory();
   return s;
 }
 
@@ -451,17 +494,6 @@ function commitDraw() {
   }
 }
 
-function applyMove(s, orig, dx, dy) {
-  if (s.type === "line") {
-    s.x1 = orig.x1 + dx; s.y1 = orig.y1 + dy; s.x2 = orig.x2 + dx; s.y2 = orig.y2 + dy;
-    const p = snapPt({ x: s.x1, y: s.y1 });
-    const ox = p.x - s.x1, oy = p.y - s.y1;
-    s.x1 += ox; s.y1 += oy; s.x2 += ox; s.y2 += oy;
-  } else {
-    const p = snapPt({ x: orig.x + dx, y: orig.y + dy });
-    s.x = p.x; s.y = p.y;
-  }
-}
 function cloneGeom(s) {
   if (s.type === "line") return { x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2 };
   return { x: s.x, y: s.y, w: s.w, h: s.h };
@@ -475,6 +507,138 @@ function applyResize(s, orig, handle, pt) {
   if (handle.includes("s")) y2 = p.y;
   s.x = Math.min(x, x2); s.y = Math.min(y, y2);
   s.w = Math.max(2, Math.abs(x2 - x)); s.h = Math.max(2, Math.abs(y2 - y));
+}
+
+/* 複数選択をまとめて移動（先頭オブジェクトを基準にグリッドスナップ） */
+function moveSelected(origs, dx, dy) {
+  const sel = getSelected();
+  if (!sel.length) return;
+  const anchor = sel[0], o0 = origs[anchor.id];
+  let sdx = dx, sdy = dy;
+  if (o0) {
+    if (anchor.type === "line") { const p = snapPt({ x: o0.x1 + dx, y: o0.y1 + dy }); sdx = p.x - o0.x1; sdy = p.y - o0.y1; }
+    else { const p = snapPt({ x: o0.x + dx, y: o0.y + dy }); sdx = p.x - o0.x; sdy = p.y - o0.y; }
+  }
+  for (const s of sel) {
+    const o = origs[s.id]; if (!o) continue;
+    if (s.type === "line") { s.x1 = o.x1 + sdx; s.y1 = o.y1 + sdy; s.x2 = o.x2 + sdx; s.y2 = o.y2 + sdy; }
+    else { s.x = o.x + sdx; s.y = o.y + sdy; }
+  }
+}
+
+function offsetShape(s, dx, dy) {
+  if (s.type === "line") { s.x1 += dx; s.x2 += dx; s.y1 += dy; s.y2 += dy; }
+  else { s.x += dx; s.y += dy; }
+}
+
+/* 選択をクリップボードへ */
+function copySelection() {
+  const sel = getSelected();
+  if (!sel.length) return;
+  clipboard = sel.map((s) => JSON.parse(JSON.stringify(s)));
+  toast(`${clipboard.length}個をコピーしました`);
+}
+
+/* クリップボードを少しずらして貼り付け（新しい選択にする） */
+function pasteClipboard() {
+  if (!clipboard.length) return;
+  const off = (state.gridMm > 0 && state.mmPerPx) ? state.gridMm / state.mmPerPx : 12;
+  const newIds = [];
+  for (const c of clipboard) {
+    const s = JSON.parse(JSON.stringify(c));
+    s.id = state.nextId++;
+    offsetShape(s, off, off);
+    state.shapes.push(s); newIds.push(s.id);
+  }
+  state.selectedIds = newIds;
+  render(); updateStatus(); pushHistory();
+  toast(`${newIds.length}個を貼り付けました`);
+}
+
+/* 選択を即複製（Ctrl+D） */
+function duplicateSelection() {
+  const sel = getSelected();
+  if (!sel.length) return;
+  const off = (state.gridMm > 0 && state.mmPerPx) ? state.gridMm / state.mmPerPx : 12;
+  const newIds = [];
+  for (const src of sel) {
+    const s = JSON.parse(JSON.stringify(src));
+    s.id = state.nextId++;
+    offsetShape(s, off, off);
+    state.shapes.push(s); newIds.push(s.id);
+  }
+  state.selectedIds = newIds;
+  render(); updateStatus(); pushHistory();
+}
+
+/* ======================================================================
+   Undo / Redo 履歴 ＋ localStorage 自動保存
+   ====================================================================== */
+function snapshot() {
+  return JSON.stringify({ shapes: state.shapes, selectedIds: state.selectedIds });
+}
+function pushHistory() {
+  // やり直し分を切り捨ててから追加
+  if (history.index < history.stack.length - 1) history.stack = history.stack.slice(0, history.index + 1);
+  history.stack.push(snapshot());
+  if (history.stack.length > 120) history.stack.shift();
+  history.index = history.stack.length - 1;
+  scheduleAutosave();
+  updateUndoButtons();
+}
+let _histTimer = null;
+function scheduleHistory() { clearTimeout(_histTimer); _histTimer = setTimeout(pushHistory, 450); }
+function restoreSnapshot(snap) {
+  const d = JSON.parse(snap);
+  state.shapes = d.shapes || [];
+  state.selectedIds = (d.selectedIds || []).filter((id) => state.shapes.some((s) => s.id === id));
+  state.nextId = state.shapes.reduce((m, s) => Math.max(m, s.id || 0), 0) + 1;
+  if (!getSel()) hideSelInfo();
+  render(); updateStatus(); updateUndoButtons(); scheduleAutosave();
+}
+function undo() {
+  if (history.index <= 0) { toast("これ以上戻せません", true); return; }
+  history.index--;
+  restoreSnapshot(history.stack[history.index]);
+}
+function redo() {
+  if (history.index >= history.stack.length - 1) { toast("これ以上やり直せません", true); return; }
+  history.index++;
+  restoreSnapshot(history.stack[history.index]);
+}
+function updateUndoButtons() {
+  const u = $("undoBtn"), r = $("redoBtn");
+  if (u) u.disabled = history.index <= 0;
+  if (r) r.disabled = history.index >= history.stack.length - 1;
+}
+
+let _saveTimer = null;
+function scheduleAutosave() { clearTimeout(_saveTimer); _saveTimer = setTimeout(autosave, 400); }
+function autosave() {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify({
+      version: 1, mmPerPx: state.mmPerPx, gridMm: state.gridMm,
+      worldW: state.worldW, worldH: state.worldH, shapes: state.shapes,
+    }));
+  } catch (e) { /* 容量超過などは無視 */ }
+}
+function restoreAutosave() {
+  try {
+    const txt = localStorage.getItem(LS_KEY);
+    if (!txt) return false;
+    const d = JSON.parse(txt);
+    if (!d.shapes || !d.shapes.length) return false;
+    state.shapes = d.shapes;
+    state.mmPerPx = d.mmPerPx || null;
+    state.gridMm = d.gridMm ?? state.gridMm;
+    $("gridSel").value = String(state.gridMm);
+    setSceneSize(d.worldW || 2400, d.worldH || 1700);
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, state.worldW, state.worldH);
+    state.nextId = state.shapes.reduce((m, s) => Math.max(m, s.id || 0), 0) + 1;
+    $("pageInfo").textContent = "白紙";
+    hint.style.display = "none";
+    return true;
+  } catch (e) { return false; }
 }
 
 /* ======================================================================
@@ -506,6 +670,7 @@ function handleMeasureClick(pt) {
   }
   measure = null;
   updateStatus();
+  scheduleAutosave();
   setTool("select");
   render();
 }
@@ -539,14 +704,23 @@ function onDown(e) {
   }
 
   if (state.tool === "select") {
-    const id = e.target.getAttribute && e.target.getAttribute("data-id");
-    if (id) {
-      state.selectedId = parseInt(id, 10);
-      const s = getSel();
-      drag = { mode: "move", start: raw, orig: cloneGeom(s) };
-      render();
+    const idAttr = e.target.getAttribute && e.target.getAttribute("data-id");
+    if (idAttr) {
+      const id = parseInt(idAttr, 10);
+      if (e.shiftKey) {
+        toggleSel(id);
+        render();
+        if (isSelected(id)) drag = { mode: "move", start: raw, origs: snapshotGeoms() };
+      } else {
+        if (!isSelected(id)) selectOnly(id);
+        drag = { mode: "move", start: raw, origs: snapshotGeoms() };
+        render();
+      }
     } else {
-      state.selectedId = null; hideSelInfo(); render();
+      // 空白でドラッグ → 範囲選択（マーキー）
+      drag = { mode: "marquee", start: raw, cur: raw, add: e.shiftKey };
+      if (!e.shiftKey) { clearSelection(); hideSelInfo(); }
+      render();
     }
     return;
   }
@@ -585,28 +759,47 @@ function onMove(e) {
     applyTransform(); return;
   }
   if (drag.mode === "draw") { drag.cur = snapPt(raw); render(); return; }
+  if (drag.mode === "marquee") { drag.cur = raw; render(); return; }
   if (drag.mode === "move") {
-    const s = getSel(); if (!s) return;
-    applyMove(s, drag.orig, raw.x - drag.start.x, raw.y - drag.start.y); render(); return;
+    moveSelected(drag.origs, raw.x - drag.start.x, raw.y - drag.start.y);
+    drag.moved = true; render(); return;
   }
   if (drag.mode === "resize") {
     const s = getSel(); if (!s) return;
-    applyResize(s, drag.orig, drag.handle, raw); render(); return;
+    applyResize(s, drag.orig, drag.handle, raw); drag.moved = true; render(); return;
   }
   if (drag.mode === "rotate") {
     const s = getSel(); if (!s) return;
     let ang = Math.atan2(raw.y - drag.ctr.y, raw.x - drag.ctr.x) * 180 / Math.PI + 90;
     if (e.shiftKey) ang = Math.round(ang / 15) * 15; else ang = Math.round(ang);
     s.rot = ((ang % 360) + 360) % 360;
-    render(); return;
+    drag.moved = true; render(); return;
   }
 }
 
 function onUp() {
-  if (drag && drag.mode === "draw") { commitDraw(); setTool("select"); }
+  if (drag) {
+    if (drag.mode === "draw") { commitDraw(); setTool("select"); }
+    else if (drag.mode === "marquee") { finishMarquee(); }
+    else if (drag.moved && (drag.mode === "move" || drag.mode === "resize" || drag.mode === "rotate")) { pushHistory(); }
+  }
   viewport.classList.remove("panning");
   drag = null;
   updateStatus();
+}
+
+function rectsIntersect(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+function finishMarquee() {
+  const a = drag.start, b = drag.cur;
+  const rx = Math.min(a.x, b.x), ry = Math.min(a.y, b.y), rw = Math.abs(b.x - a.x), rh = Math.abs(b.y - a.y);
+  if (rw < 3 && rh < 3) { render(); return; } // ほぼ動かなければ単なる空クリック扱い
+  const box = { x: rx, y: ry, w: rw, h: rh };
+  const hit = state.shapes.filter((s) => rectsIntersect(box, bbox(s))).map((s) => s.id);
+  if (drag.add) { for (const id of hit) if (!isSelected(id)) state.selectedIds.push(id); }
+  else state.selectedIds = hit;
+  render();
 }
 
 /* ======================================================================
@@ -661,8 +854,8 @@ async function loadLayout(file) {
     state.gridMm = d.gridMm ?? state.gridMm;
     $("gridSel").value = String(state.gridMm);
     state.nextId = state.shapes.reduce((m, s) => Math.max(m, s.id || 0), 0) + 1;
-    state.selectedId = null;
-    updateStatus(); render();
+    clearSelection(); hideSelInfo();
+    updateStatus(); render(); pushHistory();
     toast("読み込みました（※同じPDFを開いておくと位置が合います）");
   } catch (e) { toast("JSONの読込に失敗しました", true); }
 }
@@ -752,7 +945,19 @@ function wire() {
   $("measure").onclick = () => { startMeasure(false); $("measure").classList.add("active"); };
 
   // グリッド
-  $("gridSel").onchange = (e) => { state.gridMm = parseInt(e.target.value, 10); render(); };
+  $("gridSel").onchange = (e) => { state.gridMm = parseInt(e.target.value, 10); render(); scheduleAutosave(); };
+
+  // 白紙で開始
+  $("blankBtn").onclick = () => {
+    blankCanvas();
+    state.mmPerPx = null;
+    updateStatus(); render(); zoomFit();
+    toast("白紙を作成しました。「縮尺合わせ」で寸法を設定してください");
+  };
+
+  // Undo / Redo
+  $("undoBtn").onclick = undo;
+  $("redoBtn").onclick = redo;
 
   // 保存系
   $("saveBtn").onclick = saveLayout;
@@ -760,7 +965,7 @@ function wire() {
 
   // 削除系
   $("deleteBtn").onclick = deleteSelected;
-  $("clearBtn").onclick = () => { if (confirm("作図したオブジェクトをすべて消去します。よろしいですか？")) { state.shapes = []; state.selectedId = null; hideSelInfo(); render(); updateStatus(); } };
+  $("clearBtn").onclick = () => { if (confirm("作図したオブジェクトをすべて消去します。よろしいですか？")) { state.shapes = []; clearSelection(); hideSelInfo(); render(); updateStatus(); pushHistory(); } };
 
   // 回転ボタン
   $("rotL").onclick = () => rotateSel(-15);
@@ -770,6 +975,7 @@ function wire() {
   viewport.addEventListener("pointerdown", onDown);
   document.addEventListener("pointermove", onMove);
   document.addEventListener("pointerup", onUp);
+  viewport.addEventListener("dblclick", onDblClick);
   viewport.addEventListener("contextmenu", (e) => e.preventDefault());
 
   // ホイールズーム
@@ -784,29 +990,56 @@ function wire() {
 }
 
 function deleteSelected() {
-  if (!state.selectedId) return;
-  state.shapes = state.shapes.filter((s) => s.id !== state.selectedId);
-  state.selectedId = null; hideSelInfo(); render(); updateStatus();
+  if (!state.selectedIds.length) return;
+  state.shapes = state.shapes.filter((s) => !isSelected(s.id));
+  clearSelection(); hideSelInfo(); render(); updateStatus(); pushHistory();
+}
+function onDblClick(e) {
+  const idAttr = e.target.getAttribute && e.target.getAttribute("data-id");
+  if (!idAttr) return;
+  const s = state.shapes.find((x) => x.id === parseInt(idAttr, 10));
+  if (!s) return;
+  if (s.type === "text") {
+    const t = prompt("テキストを編集", s.text || "");
+    if (t !== null) { s.text = t; selectOnly(s.id); render(); pushHistory(); }
+  } else if (s.type === "fixture" || s.type === "rect" || s.type === "ellipse") {
+    const nm = prompt("名称を編集", s.name || "");
+    if (nm !== null) { s.name = nm; selectOnly(s.id); render(); pushHistory(); }
+  }
 }
 function rotateSel(delta) {
-  const s = getSel(); if (!s) return;
-  s.rot = (((s.rot || 0) + delta) % 360 + 360) % 360;
-  render();
+  const sel = getSelected(); if (!sel.length) return;
+  for (const s of sel) s.rot = (((s.rot || 0) + delta) % 360 + 360) % 360;
+  render(); pushHistory();
 }
 function nudge(dx, dy) {
-  const s = getSel(); if (!s) return;
+  const sel = getSelected(); if (!sel.length) return;
   const step = (state.gridMm > 0 && state.mmPerPx) ? state.gridMm / state.mmPerPx : 5;
-  if (s.type === "line") { s.x1 += dx * step; s.x2 += dx * step; s.y1 += dy * step; s.y2 += dy * step; }
-  else { s.x += dx * step; s.y += dy * step; }
-  render();
+  for (const s of sel) {
+    if (s.type === "line") { s.x1 += dx * step; s.x2 += dx * step; s.y1 += dy * step; s.y2 += dy * step; }
+    else { s.x += dx * step; s.y += dy * step; }
+  }
+  render(); scheduleHistory();
 }
 function onKey(e) {
   const tag = (e.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || tag === "select") return;
+
+  if (e.ctrlKey || e.metaKey) {
+    const k = e.key.toLowerCase();
+    if (k === "z") { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
+    if (k === "y") { e.preventDefault(); redo(); return; }
+    if (k === "c") { copySelection(); return; }
+    if (k === "v") { e.preventDefault(); pasteClipboard(); return; }
+    if (k === "d") { e.preventDefault(); duplicateSelection(); return; }
+    if (k === "a") { e.preventDefault(); selectAll(); return; }
+    if (k === "s") { e.preventDefault(); saveLayout(); return; }
+  }
+
   if (e.code === "Space") { spaceDown = true; viewport.classList.add("pan"); e.preventDefault(); return; }
   switch (e.key) {
     case "Delete": case "Backspace": deleteSelected(); e.preventDefault(); break;
-    case "Escape": setTool("select"); measure = null; state.selectedId = null; hideSelInfo(); render(); break;
+    case "Escape": setTool("select"); measure = null; clearSelection(); hideSelInfo(); render(); break;
     case "v": case "V": setTool("select"); break;
     case "r": if (getSel()) rotateSel(e.shiftKey ? -15 : 15); else setTool("rect"); break;
     case "R": rotateSel(-15); break;
@@ -817,7 +1050,6 @@ function onKey(e) {
     case "ArrowUp": nudge(0, -1); e.preventDefault(); break;
     case "ArrowDown": nudge(0, 1); e.preventDefault(); break;
   }
-  if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) { e.preventDefault(); saveLayout(); }
 }
 
 /* ---- init ---- */
@@ -826,7 +1058,13 @@ window.addEventListener("DOMContentLoaded", () => {
   setSceneSize(1200, 800);
   ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, 1200, 800);
   applyTransform();
+
+  // 前回の自動保存があれば復元
+  const restored = restoreAutosave();
+  if (restored) toast("前回の作図を復元しました（PDF/画像は再度開いてください）");
+
   updateStatus();
   render();
   zoomFit();
+  pushHistory(); // 履歴のベースライン
 });

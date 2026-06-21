@@ -101,9 +101,16 @@
     <div class="group">
       <label class="filebtn" for="pdfInput">📄 PDFを開く</label>
       <input type="file" id="pdfInput" accept="application/pdf,image/*">
+      <button id="blankBtn" class="ghost" title="白紙キャンバスで作図を始める">📃 白紙</button>
       <button id="prevPage" class="ghost" title="前のページ">◀</button>
       <span id="pageInfo">— / —</span>
       <button id="nextPage" class="ghost" title="次のページ">▶</button>
+    </div>
+
+    <div class="group">
+      <span class="lbl">編集</span>
+      <button id="undoBtn" class="ghost" title="取り消し (Ctrl+Z)" disabled>↩︎ 戻す</button>
+      <button id="redoBtn" class="ghost" title="やり直し (Ctrl+Y / Ctrl+Shift+Z)" disabled>↪︎ 進む</button>
     </div>
 
     <div class="group">
@@ -192,7 +199,7 @@
     <span id="scaleStat" class="scaleNo">縮尺：未設定</span>
     <span class="pill" id="cursorStat">— , —</span>
     <span id="countStat">オブジェクト：0</span>
-    <span style="margin-left:auto">操作：<kbd>ホイール</kbd>拡縮 / <kbd>Space+ドラッグ</kbd>移動 / <kbd>Del</kbd>削除 / <kbd>R</kbd>回転 / <kbd>Esc</kbd>解除</span>
+    <span style="margin-left:auto">操作：<kbd>ホイール</kbd>拡縮 / <kbd>Space+ドラッグ</kbd>移動 / <kbd>Ctrl+Z</kbd>戻す / <kbd>Ctrl+D</kbd>複製 / <kbd>Shift+クリック</kbd>追加選択 / <kbd>ドラッグ</kbd>範囲選択 / <kbd>Del</kbd>削除</span>
   </div>
 
   <!-- pdf.js（ローカル同梱：CDN不要・オフライン可・Worker制約も回避） -->
