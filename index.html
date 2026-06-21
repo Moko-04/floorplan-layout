@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>図面レイアウト — 簡易店内造作CAD</title>
+<style>
+  :root{
+    --bg:#1f2430; --panel:#272d3b; --panel2:#2f3647; --line:#3a4256;
+    --txt:#e6e9f0; --muted:#9aa3b5; --accent:#4f8cff; --accent2:#39c07a;
+    --danger:#ff5d6c; --warn:#ffb347;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    font-family:"Segoe UI","Hiragino Kaku Gothic ProN","Meiryo",sans-serif;
+    background:var(--bg); color:var(--txt); display:flex; flex-direction:column; overflow:hidden;
+  }
+  /* ---- toolbar ---- */
+  .toolbar{
+    display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+    background:var(--panel); border-bottom:1px solid var(--line);
+    padding:6px 10px; font-size:13px;
+  }
+  .group{display:flex; align-items:center; gap:4px; padding:0 6px; border-right:1px solid var(--line);}
+  .group:last-child{border-right:none}
+  .group .lbl{color:var(--muted); font-size:11px; margin-right:2px;}
+  button, select, .filebtn{
+    background:var(--panel2); color:var(--txt); border:1px solid var(--line);
+    border-radius:6px; padding:6px 10px; font-size:13px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:5px; white-space:nowrap;
+  }
+  button:hover,.filebtn:hover,select:hover{border-color:var(--accent)}
+  button.active{background:var(--accent); border-color:var(--accent); color:#fff}
+  button.tool{min-width:38px; justify-content:center}
+  button.ghost{background:transparent}
+  button.danger:hover{border-color:var(--danger); color:var(--danger)}
+  input[type=file]{display:none}
+  .filebtn{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600}
+  .filebtn:hover{filter:brightness(1.07)}
+  #pageInfo{min-width:74px; text-align:center; color:var(--muted)}
+  /* ---- main ---- */
+  #viewport{
+    position:relative; flex:1; overflow:hidden; background:#11141c;
+    background-image:
+      linear-gradient(45deg,#171b25 25%,transparent 25%),
+      linear-gradient(-45deg,#171b25 25%,transparent 25%),
+      linear-gradient(45deg,transparent 75%,#171b25 75%),
+      linear-gradient(-45deg,transparent 75%,#171b25 75%);
+    background-size:24px 24px; background-position:0 0,0 12px,12px -12px,-12px 0;
+    cursor:crosshair;
+  }
+  #viewport.pan{cursor:grab}
+  #viewport.panning{cursor:grabbing}
+  #viewport.select{cursor:default}
+  #scene{position:absolute; top:0; left:0; transform-origin:0 0;}
+  #pdfCanvas{position:absolute; top:0; left:0; box-shadow:0 0 0 1px #000, 0 8px 40px rgba(0,0,0,.6); background:#fff;}
+  #overlay{position:absolute; top:0; left:0; overflow:visible;}
+  /* empty hint */
+  #hint{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    color:var(--muted); font-size:15px; text-align:center; pointer-events:none; padding:20px;
+  }
+  #hint .card{background:rgba(39,45,59,.85); border:1px solid var(--line); border-radius:14px; padding:26px 34px; max-width:520px; line-height:1.9;}
+  #hint b{color:var(--txt)}
+  /* ---- status bar ---- */
+  .status{
+    display:flex; align-items:center; gap:18px; flex-wrap:wrap;
+    background:var(--panel); border-top:1px solid var(--line);
+    padding:5px 12px; font-size:12px; color:var(--muted);
+  }
+  .status b{color:var(--txt); font-weight:600}
+  .status .scaleOk{color:var(--accent2)}
+  .status .scaleNo{color:var(--warn)}
+  .pill{background:var(--panel2); border:1px solid var(--line); border-radius:20px; padding:3px 10px;}
+  /* selection info float */
+  #selInfo{
+    position:absolute; right:14px; top:14px; width:230px;
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:12px; font-size:12px; display:none; z-index:5;
+  }
+  #selInfo h4{margin:0 0 8px; font-size:12px; color:var(--muted); font-weight:600; letter-spacing:.04em;}
+  #selInfo .row{display:flex; align-items:center; gap:6px; margin-bottom:6px;}
+  #selInfo .row label{width:54px; color:var(--muted)}
+  #selInfo input{flex:1; background:var(--panel2); border:1px solid var(--line); color:var(--txt); border-radius:5px; padding:5px 7px; font-size:12px; width:100%}
+  #selInfo .colors{display:flex; gap:6px; flex-wrap:wrap; margin:4px 0 8px}
+  #selInfo .sw{width:20px; height:20px; border-radius:5px; cursor:pointer; border:2px solid transparent}
+  #selInfo .sw.sel{border-color:#fff}
+  .toast{
+    position:absolute; left:50%; bottom:54px; transform:translateX(-50%);
+    background:var(--accent); color:#fff; padding:9px 16px; border-radius:8px; font-size:13px;
+    z-index:20; box-shadow:0 6px 20px rgba(0,0,0,.4); opacity:0; transition:opacity .2s; pointer-events:none;
+  }
+  .toast.show{opacity:1}
+  .toast.warn{background:var(--warn); color:#1f2430}
+  kbd{background:#11141c; border:1px solid var(--line); border-radius:4px; padding:1px 6px; font-size:11px}
+</style>
+</head>
+<body>
+  <div class="toolbar">
+    <div class="group">
+      <label class="filebtn" for="pdfInput">📄 PDFを開く</label>
+      <input type="file" id="pdfInput" accept="application/pdf,image/*">
+      <button id="prevPage" class="ghost" title="前のページ">◀</button>
+      <span id="pageInfo">— / —</span>
+      <button id="nextPage" class="ghost" title="次のページ">▶</button>
+    </div>
+
+    <div class="group">
+      <span class="lbl">表示</span>
+      <button id="zoomOut" class="tool" title="縮小">－</button>
+      <span id="zoomLabel" style="min-width:46px;text-align:center;color:var(--muted)">100%</span>
+      <button id="zoomIn" class="tool" title="拡大">＋</button>
+      <button id="zoomFit" class="ghost" title="全体表示">⤢ 全体</button>
+    </div>
+
+    <div class="group">
+      <span class="lbl">縮尺</span>
+      <button id="calibrate" title="図面上の既知の長さを2点クリックして実寸を入力">📏 縮尺合わせ</button>
+      <button id="measure" class="ghost" title="2点間の実寸を計測">計測</button>
+    </div>
+
+    <div class="group">
+      <span class="lbl">ツール</span>
+      <button id="tSelect" class="tool active" title="選択・移動 (V)">↖</button>
+      <button id="tRect"   class="tool" title="矩形・部屋 (R)">▭</button>
+      <button id="tLine"   class="tool" title="線・壁 (L)">／</button>
+      <button id="tText"   class="tool" title="文字 (T)">T</button>
+      <button id="tPan"    class="tool" title="画面移動 (Space押しながらでも可)">✋</button>
+    </div>
+
+    <div class="group">
+      <span class="lbl">什器</span>
+      <select id="fixtureSel" title="クリックして配置（要・縮尺合わせ）">
+        <option value="">＋ 什器を選んで配置…</option>
+      </select>
+    </div>
+
+    <div class="group">
+      <span class="lbl">グリッド</span>
+      <select id="gridSel" title="スナップ間隔">
+        <option value="0">なし</option>
+        <option value="50">50mm</option>
+        <option value="100" selected>100mm</option>
+        <option value="250">250mm</option>
+        <option value="500">500mm</option>
+        <option value="1000">1000mm</option>
+      </select>
+    </div>
+
+    <div class="group">
+      <button id="saveBtn" class="ghost" title="レイアウトを保存">💾 保存</button>
+      <label class="filebtn ghost" for="loadInput" style="background:transparent;color:var(--txt);border:1px solid var(--line);font-weight:400">📂 読込</label>
+      <input type="file" id="loadInput" accept="application/json,.json">
+      <button id="exportBtn" class="ghost" title="画像(PNG)で書き出し">🖼 PNG</button>
+    </div>
+
+    <div class="group">
+      <button id="deleteBtn" class="ghost danger" title="削除 (Delete)">🗑 削除</button>
+      <button id="clearBtn" class="ghost danger" title="作図をすべて消去">全消去</button>
+    </div>
+  </div>
+
+  <div id="viewport" class="select">
+    <div id="scene">
+      <canvas id="pdfCanvas" width="1200" height="800"></canvas>
+      <svg id="overlay" width="1200" height="800"></svg>
+    </div>
+
+    <div id="selInfo">
+      <h4>選択中</h4>
+      <div id="selBody"></div>
+      <div class="colors" id="colorRow"></div>
+      <button id="rotL" class="ghost" style="flex:1">⟲ -15°</button>
+      <button id="rotR" class="ghost" style="flex:1">15° ⟳</button>
+    </div>
+
+    <div id="hint">
+      <div class="card">
+        <b>図面レイアウトツール</b><br>
+        ① <b>「PDFを開く」</b>で図面を読み込む<br>
+        ② <b>「縮尺合わせ」</b>で既知の寸法を2点クリック→実寸を入力<br>
+        ③ 什器を選んで配置、矩形・壁を描いて造作レイアウト<br>
+        <span style="font-size:12px;color:var(--muted)">※ PDFが無くても、縮尺を「1000mm」などで仮設定すれば白紙から作図できます</span>
+      </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+  </div>
+
+  <div class="status">
+    <span id="scaleStat" class="scaleNo">縮尺：未設定</span>
+    <span class="pill" id="cursorStat">— , —</span>
+    <span id="countStat">オブジェクト：0</span>
+    <span style="margin-left:auto">操作：<kbd>ホイール</kbd>拡縮 / <kbd>Space+ドラッグ</kbd>移動 / <kbd>Del</kbd>削除 / <kbd>R</kbd>回転 / <kbd>Esc</kbd>解除</span>
+  </div>
+
+  <!-- pdf.js（ローカル同梱：CDN不要・オフライン可・Worker制約も回避） -->
+  <script src="vendor/pdf.min.js"></script>
+  <script>
+    if(window.pdfjsLib){
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "vendor/pdf.worker.min.js";
+    }
+  </script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,832 @@
+/* =========================================================================
+   図面レイアウト — 簡易店内造作CAD
+   PDF/画像を背景に、縮尺を合わせて実寸で造作・什器を配置する単一ページアプリ
+   ========================================================================= */
+"use strict";
+
+const SVGNS = "http://www.w3.org/2000/svg";
+
+/* ---- 什器プリセット（footprint, mm単位）----
+   恵比寿造作案_72坪 を参考に、ダーツ＆ポーカーバー向けに整備 */
+const FIXTURES = [
+  // 席・テーブル
+  { g: "席・テーブル", name: "ポーカー台",        w: 2130, h: 1060, shape: "rect" },
+  { g: "席・テーブル", name: "ダーツ台 (筐体)",   w: 650,  h: 600,  shape: "rect" },
+  { g: "席・テーブル", name: "丸テーブル φ650",   w: 650,  h: 650,  shape: "ellipse" },
+  { g: "席・テーブル", name: "角テーブル(4人)",   w: 1200, h: 700,  shape: "rect" },
+  { g: "席・テーブル", name: "角テーブル(2人)",   w: 600,  h: 700,  shape: "rect" },
+  { g: "席・テーブル", name: "カウンター (1m)",   w: 1000, h: 600,  shape: "rect" },
+  { g: "席・テーブル", name: "椅子",              w: 450,  h: 450,  shape: "rect" },
+  { g: "席・テーブル", name: "スツール φ350",     w: 350,  h: 350,  shape: "ellipse" },
+  { g: "席・テーブル", name: "ソファ(2人)",       w: 1200, h: 700,  shape: "rect" },
+  { g: "席・テーブル", name: "ロッカー",          w: 900,  h: 450,  shape: "rect" },
+  // 厨房・什器
+  { g: "厨房・什器", name: "二層シンク",          w: 1200, h: 600,  shape: "rect" },
+  { g: "厨房・什器", name: "一層シンク",          w: 600,  h: 600,  shape: "rect" },
+  { g: "厨房・什器", name: "コールドテーブル",     w: 1200, h: 600,  shape: "rect" },
+  { g: "厨房・什器", name: "コールドテーブル(大)", w: 1800, h: 600,  shape: "rect" },
+  { g: "厨房・什器", name: "ガスコンロ&作業台",   w: 1200, h: 600,  shape: "rect" },
+  { g: "厨房・什器", name: "作業台",              w: 1200, h: 600,  shape: "rect" },
+  { g: "厨房・什器", name: "冷蔵ショーケース",     w: 1200, h: 600,  shape: "rect" },
+  { g: "厨房・什器", name: "製氷機",              w: 600,  h: 600,  shape: "rect" },
+  { g: "厨房・什器", name: "冷蔵庫",              w: 600,  h: 650,  shape: "rect" },
+  { g: "厨房・什器", name: "レジ台",              w: 600,  h: 450,  shape: "rect" },
+  // 設備・その他
+  { g: "設備・その他", name: "WC (個室)",         w: 1650, h: 1400, shape: "rect" },
+  { g: "設備・その他", name: "ドア (900)",        w: 900,  h: 900,  shape: "door" },
+  { g: "設備・その他", name: "引き戸 (1800)",     w: 1800, h: 100,  shape: "rect" },
+  { g: "設備・その他", name: "スクリーン",         w: 2000, h: 100,  shape: "rect" },
+  { g: "設備・その他", name: "TVモニタ",          w: 1200, h: 100,  shape: "rect" },
+  { g: "設備・その他", name: "カスタム寸法…",      custom: true },
+];
+
+const COLORS = ["#4f8cff", "#39c07a", "#ffb347", "#ff5d6c", "#b07cff", "#42c8d0", "#8a93a8", "#222a3a"];
+
+/* ---- 状態 ---- */
+const state = {
+  pdfDoc: null,
+  pageNum: 1,
+  pageCount: 0,
+  renderScale: 2,        // PDF描画解像度
+  worldW: 1200,
+  worldH: 800,
+  mmPerPx: null,         // 縮尺：1ワールドpxあたり何mmか
+  zoom: 1,
+  panX: 0,
+  panY: 0,
+  tool: "select",
+  shapes: [],
+  selectedId: null,
+  gridMm: 100,
+  nextId: 1,
+};
+
+/* ---- DOM ---- */
+const $ = (id) => document.getElementById(id);
+const viewport = $("viewport");
+const scene = $("scene");
+const canvas = $("pdfCanvas");
+const ctx = canvas.getContext("2d");
+const overlay = $("overlay");
+const hint = $("hint");
+
+/* ---- 一時状態 ---- */
+let drag = null;          // {mode, ...}
+let measure = null;       // 縮尺合わせ/計測 {p1, cur, forScale}
+let spaceDown = false;
+
+/* ======================================================================
+   ユーティリティ
+   ====================================================================== */
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+function screenToWorld(cx, cy) {
+  const r = viewport.getBoundingClientRect();
+  return { x: (cx - r.left - state.panX) / state.zoom, y: (cy - r.top - state.panY) / state.zoom };
+}
+function snapVal(v) {
+  if (state.gridMm > 0 && state.mmPerPx) {
+    const g = state.gridMm / state.mmPerPx;
+    return Math.round(v / g) * g;
+  }
+  return v;
+}
+function snapPt(p) { return { x: snapVal(p.x), y: snapVal(p.y) }; }
+function mm(px) { return state.mmPerPx ? px * state.mmPerPx : null; }
+function fmtMM(v) {
+  if (v == null) return "—";
+  return Math.round(v).toLocaleString("ja-JP") + "mm";
+}
+function getSel() { return state.shapes.find((s) => s.id === state.selectedId) || null; }
+function bbox(s) {
+  if (s.type === "line") {
+    return { x: Math.min(s.x1, s.x2), y: Math.min(s.y1, s.y2),
+             w: Math.abs(s.x2 - s.x1), h: Math.abs(s.y2 - s.y1) };
+  }
+  if (s.type === "text") return { x: s.x, y: s.y - 14, w: 8, h: 18 };
+  return { x: s.x, y: s.y, w: s.w, h: s.h };
+}
+function center(s) { const b = bbox(s); return { x: b.x + b.w / 2, y: b.y + b.h / 2 }; }
+
+function toast(msg, warn) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "toast show" + (warn ? " warn" : "");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => (t.className = "toast"), 2200);
+}
+
+/* ======================================================================
+   ビュー変換
+   ====================================================================== */
+function applyTransform() {
+  scene.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+  $("zoomLabel").textContent = Math.round(state.zoom * 100) + "%";
+}
+function setSceneSize(w, h) {
+  state.worldW = w; state.worldH = h;
+  canvas.width = w; canvas.height = h;
+  overlay.setAttribute("width", w);
+  overlay.setAttribute("height", h);
+  overlay.setAttribute("viewBox", `0 0 ${w} ${h}`);
+}
+function zoomFit() {
+  const r = viewport.getBoundingClientRect();
+  const pad = 40;
+  const z = Math.min((r.width - pad) / state.worldW, (r.height - pad) / state.worldH);
+  state.zoom = z > 0 ? z : 1;
+  state.panX = (r.width - state.worldW * state.zoom) / 2;
+  state.panY = (r.height - state.worldH * state.zoom) / 2;
+  applyTransform();
+}
+function zoomAt(factor, cx, cy) {
+  const before = screenToWorld(cx, cy);
+  state.zoom = Math.min(8, Math.max(0.05, state.zoom * factor));
+  const r = viewport.getBoundingClientRect();
+  state.panX = cx - r.left - before.x * state.zoom;
+  state.panY = cy - r.top - before.y * state.zoom;
+  applyTransform();
+}
+
+/* ======================================================================
+   PDF / 画像 読み込み
+   ====================================================================== */
+async function openFile(file) {
+  if (!file) return;
+  const name = (file.name || "").toLowerCase();
+  try {
+    if (file.type === "application/pdf" || name.endsWith(".pdf")) {
+      if (!window.pdfjsLib) {
+        toast("PDFライブラリが読み込めません。「起動.bat」から開いてください", true);
+        return;
+      }
+      toast("PDFを読み込み中…");
+      const buf = await file.arrayBuffer();
+      const task = pdfjsLib.getDocument({ data: new Uint8Array(buf) });
+      state.pdfDoc = await task.promise;
+      state.pageCount = state.pdfDoc.numPages;
+      state.pageNum = 1;
+      await renderPdfPage(1);
+    } else if (file.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp)$/.test(name)) {
+      await renderImage(file);
+    } else {
+      toast("PDFまたは画像ファイルを選んでください", true);
+      return;
+    }
+    hint.style.display = "none";
+    state.mmPerPx = null; // ページが変わったら縮尺は要再設定
+    updateStatus();
+    zoomFit();
+    toast("読み込み完了。次に「縮尺合わせ」をしてください");
+  } catch (err) {
+    console.error("PDF/画像の読み込みに失敗:", err);
+    toast("読み込みに失敗：" + (err && err.message ? err.message : err) + "（起動.batから開くと確実です）", true);
+  }
+}
+
+async function renderPdfPage(num) {
+  const page = await state.pdfDoc.getPage(num);
+  const vp = page.getViewport({ scale: state.renderScale });
+  setSceneSize(Math.round(vp.width), Math.round(vp.height));
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  state.pageNum = num;
+  $("pageInfo").textContent = `${num} / ${state.pageCount}`;
+  render();
+}
+
+function renderImage(file) {
+  return new Promise((res) => {
+    const img = new Image();
+    img.onload = () => {
+      setSceneSize(img.naturalWidth, img.naturalHeight);
+      ctx.drawImage(img, 0, 0);
+      state.pdfDoc = null; state.pageCount = 1; state.pageNum = 1;
+      $("pageInfo").textContent = "画像";
+      render(); res();
+    };
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+/* 白紙キャンバス（PDFなしで作図したい場合） */
+function blankCanvas() {
+  setSceneSize(2400, 1700);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, state.worldW, state.worldH);
+  $("pageInfo").textContent = "白紙";
+  hint.style.display = "none";
+}
+
+/* ======================================================================
+   描画（オーバーレイSVG再構築）
+   ====================================================================== */
+function render() {
+  while (overlay.firstChild) overlay.removeChild(overlay.firstChild);
+  const z = state.zoom;
+  const sw = 1.6 / z, fs = 13 / z;
+
+  /* グリッド */
+  if (state.gridMm > 0 && state.mmPerPx) {
+    const g = state.gridMm / state.mmPerPx;
+    if (g * z > 4) { // 細かすぎる時は描かない
+      const defs = svgEl("defs", {});
+      const pat = svgEl("pattern", { id: "grid", width: g, height: g, patternUnits: "userSpaceOnUse" });
+      pat.appendChild(svgEl("path", { d: `M ${g} 0 L 0 0 0 ${g}`, fill: "none", stroke: "rgba(80,140,255,.28)", "stroke-width": 0.7 / z }));
+      defs.appendChild(pat);
+      overlay.appendChild(defs);
+      overlay.appendChild(svgEl("rect", { x: 0, y: 0, width: state.worldW, height: state.worldH, fill: "url(#grid)" }));
+    }
+  }
+
+  for (const s of state.shapes) renderShape(s, sw, fs);
+
+  /* 作図プレビュー */
+  if (drag && drag.mode === "draw") renderPreview(sw, fs);
+
+  /* 縮尺合わせ / 計測 */
+  if (measure) renderMeasure(sw, fs);
+
+  /* 選択ハンドル */
+  const sel = getSel();
+  if (sel) renderSelection(sel, z);
+}
+
+function shapeColor(s) { return s.color || "#4f8cff"; }
+
+function renderShape(s, sw, fs) {
+  const c = shapeColor(s);
+  const g = svgEl("g", {});
+  const ctr = center(s);
+  if (s.rot) g.setAttribute("transform", `rotate(${s.rot} ${ctr.x} ${ctr.y})`);
+
+  if (s.type === "line") {
+    g.appendChild(svgEl("line", { x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2,
+      stroke: c, "stroke-width": (s.weight || 4) / state.zoom, "stroke-linecap": "round",
+      "data-id": s.id, style: "cursor:move" }));
+    const len = Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+    addLabel(g, (s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2, fmtMM(mm(len)), fs, c);
+  } else if (s.type === "ellipse") {
+    g.appendChild(svgEl("ellipse", { cx: s.x + s.w / 2, cy: s.y + s.h / 2, rx: s.w / 2, ry: s.h / 2,
+      fill: c + "33", stroke: c, "stroke-width": sw, "data-id": s.id, style: "cursor:move" }));
+    addFixtureLabel(g, s, fs);
+  } else if (s.type === "door") {
+    renderDoor(g, s, sw, c);
+  } else if (s.type === "text") {
+    const t = svgEl("text", { x: s.x, y: s.y, fill: c, "font-size": (s.size || 18) / state.zoom,
+      "font-family": "sans-serif", "font-weight": 600, "data-id": s.id, style: "cursor:move" });
+    t.textContent = s.text;
+    g.appendChild(t);
+  } else { // rect / fixture
+    g.appendChild(svgEl("rect", { x: s.x, y: s.y, width: s.w, height: s.h, rx: 2 / state.zoom,
+      fill: c + (s.type === "fixture" ? "33" : "22"), stroke: c, "stroke-width": sw,
+      "data-id": s.id, style: "cursor:move" }));
+    if (s.type === "fixture") addFixtureLabel(g, s, fs);
+    else addRectDims(g, s, fs, c);
+  }
+  overlay.appendChild(g);
+}
+
+function renderDoor(g, s, sw, c) {
+  const x = s.x, y = s.y, w = s.w; // 蝶番=(x,y)、開き幅=w
+  g.appendChild(svgEl("path", { d: `M ${x + w} ${y} A ${w} ${w} 0 0 1 ${x} ${y + w}`,
+    fill: "none", stroke: c, "stroke-width": sw, "stroke-dasharray": `${4 / state.zoom} ${4 / state.zoom}` }));
+  g.appendChild(svgEl("line", { x1: x, y1: y, x2: x, y2: y + w, stroke: c, "stroke-width": sw * 2 }));
+  // 当たり判定用の透明矩形
+  g.appendChild(svgEl("rect", { x: x, y: y, width: w, height: w, fill: "transparent",
+    "data-id": s.id, style: "cursor:move" }));
+}
+
+function addLabel(g, x, y, text, fs, c) {
+  const bg = svgEl("rect", { x: x - 1, y: y - fs, rx: 3 / state.zoom, fill: "rgba(17,20,28,.78)" });
+  const t = svgEl("text", { x: x, y: y - fs * 0.25, fill: "#fff", "font-size": fs,
+    "font-family": "sans-serif", "text-anchor": "middle" });
+  t.textContent = text;
+  g.appendChild(bg); g.appendChild(t);
+  // bg をテキスト幅に合わせる
+  requestAnimationFrame(() => {
+    try { const bb = t.getBBox(); bg.setAttribute("x", bb.x - 3 / state.zoom);
+      bg.setAttribute("y", bb.y - 1 / state.zoom); bg.setAttribute("width", bb.width + 6 / state.zoom);
+      bg.setAttribute("height", bb.height + 2 / state.zoom); } catch (e) {}
+  });
+}
+function addRectDims(g, s, fs, c) {
+  addLabel(g, s.x + s.w / 2, s.y + s.h / 2 + fs / 2, `${fmtMM(mm(s.w))} × ${fmtMM(mm(s.h))}`, fs, c);
+}
+function addFixtureLabel(g, s, fs) {
+  const cx = s.x + s.w / 2, cy = s.y + s.h / 2;
+  const t = svgEl("text", { x: cx, y: cy, fill: "#fff", "font-size": fs, "font-family": "sans-serif",
+    "text-anchor": "middle", "dominant-baseline": "central", "pointer-events": "none" });
+  t.textContent = s.name || "";
+  g.appendChild(t);
+}
+
+function renderPreview(sw, fs) {
+  const a = drag.start, b = drag.cur;
+  if (state.tool === "rect") {
+    const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y);
+    overlay.appendChild(svgEl("rect", { x, y, width: w, height: h, fill: "rgba(79,140,255,.18)",
+      stroke: "#4f8cff", "stroke-width": sw, "stroke-dasharray": `${5 / state.zoom} ${4 / state.zoom}` }));
+    const g = svgEl("g", {}); addLabel(g, x + w / 2, y + h / 2 + fs / 2, `${fmtMM(mm(w))} × ${fmtMM(mm(h))}`, fs, "#4f8cff");
+    overlay.appendChild(g);
+  } else if (state.tool === "line") {
+    overlay.appendChild(svgEl("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: "#4f8cff",
+      "stroke-width": 4 / state.zoom, "stroke-linecap": "round", "stroke-dasharray": `${5 / state.zoom} ${4 / state.zoom}` }));
+    const g = svgEl("g", {}); addLabel(g, (a.x + b.x) / 2, (a.y + b.y) / 2, fmtMM(mm(Math.hypot(b.x - a.x, b.y - a.y))), fs, "#4f8cff");
+    overlay.appendChild(g);
+  }
+}
+
+function renderMeasure(sw, fs) {
+  if (!measure.p1) return;
+  const a = measure.p1, b = measure.cur || measure.p1;
+  const col = measure.forScale ? "#ffb347" : "#39c07a";
+  overlay.appendChild(svgEl("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: col,
+    "stroke-width": 2 / state.zoom, "stroke-dasharray": `${6 / state.zoom} ${4 / state.zoom}` }));
+  for (const p of [a, b]) overlay.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: 4 / state.zoom, fill: col }));
+  const px = Math.hypot(b.x - a.x, b.y - a.y);
+  const txt = measure.forScale
+    ? (state.mmPerPx ? fmtMM(mm(px)) : `${Math.round(px)} px`)
+    : fmtMM(mm(px));
+  const g = svgEl("g", {}); addLabel(g, (a.x + b.x) / 2, (a.y + b.y) / 2, txt, fs, col); overlay.appendChild(g);
+}
+
+/* 選択枠 + ハンドル */
+function renderSelection(s, z) {
+  const b = bbox(s), ctr = center(s);
+  const g = svgEl("g", {});
+  if (s.rot) g.setAttribute("transform", `rotate(${s.rot} ${ctr.x} ${ctr.y})`);
+  g.appendChild(svgEl("rect", { x: b.x, y: b.y, width: b.w, height: b.h, fill: "none",
+    stroke: "#fff", "stroke-width": 1.2 / z, "stroke-dasharray": `${4 / z} ${3 / z}`, "pointer-events": "none" }));
+
+  const hs = 5 / z;
+  const resizable = (s.type === "rect" || s.type === "fixture" || s.type === "ellipse") && !s.rot;
+  if (resizable) {
+    const corners = [["nw", b.x, b.y], ["ne", b.x + b.w, b.y], ["sw", b.x, b.y + b.h], ["se", b.x + b.w, b.y + b.h]];
+    for (const [name, hx, hy] of corners) {
+      g.appendChild(svgEl("rect", { x: hx - hs, y: hy - hs, width: hs * 2, height: hs * 2,
+        fill: "#fff", stroke: "#4f8cff", "stroke-width": 1 / z, "data-handle": name, style: "cursor:nwse-resize" }));
+    }
+  }
+  // 回転ハンドル
+  if (s.type === "rect" || s.type === "fixture" || s.type === "ellipse" || s.type === "door") {
+    const hx = ctr.x, hy = b.y - 22 / z;
+    g.appendChild(svgEl("line", { x1: ctr.x, y1: b.y, x2: hx, y2: hy, stroke: "#fff", "stroke-width": 1 / z, "pointer-events": "none" }));
+    g.appendChild(svgEl("circle", { cx: hx, cy: hy, r: hs * 1.2, fill: "#39c07a", stroke: "#fff",
+      "stroke-width": 1 / z, "data-handle": "rot", style: "cursor:grab" }));
+  }
+  overlay.appendChild(g);
+  showSelInfo(s);
+}
+
+/* ======================================================================
+   選択パネル
+   ====================================================================== */
+function showSelInfo(s) {
+  const panel = $("selInfo");
+  panel.style.display = "block";
+  const body = $("selBody");
+  let html = "";
+  if (s.type === "line") {
+    html += `<div class="row"><label>長さ</label><span>${fmtMM(mm(Math.hypot(s.x2 - s.x1, s.y2 - s.y1)))}</span></div>`;
+  } else if (s.type === "text") {
+    html += `<div class="row"><label>文字</label><input id="iTxt" value="${(s.text || "").replace(/"/g, "&quot;")}"></div>`;
+  } else {
+    html += `<div class="row"><label>名称</label><input id="iName" value="${(s.name || "").replace(/"/g, "&quot;")}" placeholder="(任意)"></div>`;
+    html += `<div class="row"><label>幅</label><input id="iW" value="${Math.round(mm(s.w) || 0)}"> <span style="color:var(--muted)">mm</span></div>`;
+    if (s.type !== "door")
+      html += `<div class="row"><label>奥行</label><input id="iH" value="${Math.round(mm(s.h) || 0)}"> <span style="color:var(--muted)">mm</span></div>`;
+    html += `<div class="row"><label>角度</label><span>${Math.round(s.rot || 0)}°</span></div>`;
+  }
+  body.innerHTML = html;
+
+  const cr = $("colorRow"); cr.innerHTML = "";
+  for (const col of COLORS) {
+    const sw = document.createElement("div");
+    sw.className = "sw" + (shapeColor(s) === col ? " sel" : "");
+    sw.style.background = col;
+    sw.onclick = () => { s.color = col; render(); };
+    cr.appendChild(sw);
+  }
+
+  // 入力 → 反映
+  const bindNum = (id, apply) => { const e = $(id); if (e) e.onchange = () => { const v = parseFloat(e.value); if (!isNaN(v) && state.mmPerPx) { apply(v / state.mmPerPx); render(); } }; };
+  bindNum("iW", (px) => { s.w = px; });
+  bindNum("iH", (px) => { s.h = px; });
+  const nm = $("iName"); if (nm) nm.onchange = () => { s.name = nm.value; render(); };
+  const tx = $("iTxt"); if (tx) tx.onchange = () => { s.text = tx.value; render(); };
+}
+function hideSelInfo() { $("selInfo").style.display = "none"; }
+
+/* ======================================================================
+   作図・編集の操作
+   ====================================================================== */
+function addShape(s) {
+  s.id = state.nextId++;
+  if (!s.color) s.color = "#4f8cff";
+  state.shapes.push(s);
+  state.selectedId = s.id;
+  render(); updateStatus();
+  return s;
+}
+
+function placeFixture(def, pt) {
+  if (!state.mmPerPx) { toast("先に「縮尺合わせ」をしてください", true); return; }
+  const w = def.w / state.mmPerPx, h = def.h / state.mmPerPx;
+  const p = snapPt({ x: pt.x - w / 2, y: pt.y - h / 2 });
+  addShape({ type: def.shape === "ellipse" ? "ellipse" : (def.shape === "door" ? "door" : "fixture"),
+    x: p.x, y: p.y, w, h, rot: 0, name: def.shape === "door" ? "" : def.name,
+    color: def.shape === "door" ? "#8a93a8" : "#39c07a" });
+}
+
+function commitDraw() {
+  const a = drag.start, b = drag.cur;
+  if (state.tool === "rect") {
+    const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y);
+    if (w > 3 && h > 3) addShape({ type: "rect", x, y, w, h, rot: 0, color: "#4f8cff" });
+  } else if (state.tool === "line") {
+    if (Math.hypot(b.x - a.x, b.y - a.y) > 3) addShape({ type: "line", x1: a.x, y1: a.y, x2: b.x, y2: b.y, weight: 4, color: "#ff5d6c" });
+  }
+}
+
+function applyMove(s, orig, dx, dy) {
+  if (s.type === "line") {
+    s.x1 = orig.x1 + dx; s.y1 = orig.y1 + dy; s.x2 = orig.x2 + dx; s.y2 = orig.y2 + dy;
+    const p = snapPt({ x: s.x1, y: s.y1 });
+    const ox = p.x - s.x1, oy = p.y - s.y1;
+    s.x1 += ox; s.y1 += oy; s.x2 += ox; s.y2 += oy;
+  } else {
+    const p = snapPt({ x: orig.x + dx, y: orig.y + dy });
+    s.x = p.x; s.y = p.y;
+  }
+}
+function cloneGeom(s) {
+  if (s.type === "line") return { x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2 };
+  return { x: s.x, y: s.y, w: s.w, h: s.h };
+}
+function applyResize(s, orig, handle, pt) {
+  const p = snapPt(pt);
+  let x = orig.x, y = orig.y, x2 = orig.x + orig.w, y2 = orig.y + orig.h;
+  if (handle.includes("w")) x = p.x;
+  if (handle.includes("e")) x2 = p.x;
+  if (handle.includes("n")) y = p.y;
+  if (handle.includes("s")) y2 = p.y;
+  s.x = Math.min(x, x2); s.y = Math.min(y, y2);
+  s.w = Math.max(2, Math.abs(x2 - x)); s.h = Math.max(2, Math.abs(y2 - y));
+}
+
+/* ======================================================================
+   縮尺合わせ
+   ====================================================================== */
+function startMeasure(forScale) {
+  setTool("select");
+  measure = { p1: null, cur: null, forScale };
+  viewport.classList.remove("select");
+  viewport.style.cursor = "crosshair";
+  toast(forScale ? "既知の寸法の2点をクリック" : "計測：2点をクリック");
+}
+function handleMeasureClick(pt) {
+  if (!measure.p1) { measure.p1 = pt; measure.cur = pt; render(); return; }
+  const px = Math.hypot(pt.x - measure.p1.x, pt.y - measure.p1.y);
+  if (px < 2) return;
+  if (measure.forScale) {
+    const ans = prompt("この2点間の実際の長さを入力（mm）\n例：壁の長さ2000mm、ドア幅900mm など", "1000");
+    if (ans !== null) {
+      const realMM = parseFloat(ans);
+      if (!isNaN(realMM) && realMM > 0) {
+        state.mmPerPx = realMM / px;
+        toast(`縮尺を設定：1px = ${state.mmPerPx.toFixed(2)}mm`);
+      }
+    }
+  } else {
+    measure.cur = pt; render();
+    setTimeout(() => toast(`計測：${fmtMM(mm(px))}`), 0);
+  }
+  measure = null;
+  updateStatus();
+  setTool("select");
+  render();
+}
+
+/* ======================================================================
+   ポインタ操作
+   ====================================================================== */
+function onDown(e) {
+  if (e.button === 2) return;
+  const panMode = e.button === 1 || spaceDown || state.tool === "pan";
+  const raw = screenToWorld(e.clientX, e.clientY);
+
+  if (panMode) {
+    drag = { mode: "pan", sx: e.clientX, sy: e.clientY, px: state.panX, py: state.panY };
+    viewport.classList.add("panning");
+    e.preventDefault(); return;
+  }
+
+  // 縮尺合わせ / 計測
+  if (measure) { handleMeasureClick(snapPt(raw)); return; }
+
+  const handle = e.target.getAttribute && e.target.getAttribute("data-handle");
+  const sel = getSel();
+  if (handle && sel) {
+    if (handle === "rot") {
+      drag = { mode: "rotate", ctr: center(sel), origRot: sel.rot || 0 };
+    } else {
+      drag = { mode: "resize", handle, orig: cloneGeom(sel) };
+    }
+    return;
+  }
+
+  if (state.tool === "select") {
+    const id = e.target.getAttribute && e.target.getAttribute("data-id");
+    if (id) {
+      state.selectedId = parseInt(id, 10);
+      const s = getSel();
+      drag = { mode: "move", start: raw, orig: cloneGeom(s) };
+      render();
+    } else {
+      state.selectedId = null; hideSelInfo(); render();
+    }
+    return;
+  }
+
+  if (state.tool === "rect" || state.tool === "line") {
+    const p = snapPt(raw);
+    drag = { mode: "draw", start: p, cur: p };
+    return;
+  }
+
+  if (state.tool === "text") {
+    const t = prompt("テキストを入力");
+    if (t) addShape({ type: "text", x: raw.x, y: raw.y, text: t, size: 18, color: "#ffb347" });
+    setTool("select");
+    return;
+  }
+
+  if (state.tool === "fixture" && state._pendingFixture) {
+    placeFixture(state._pendingFixture, raw);
+    return; // ツール維持（連続配置）
+  }
+}
+
+function onMove(e) {
+  const raw = screenToWorld(e.clientX, e.clientY);
+  // ステータスのカーソル座標
+  if (state.mmPerPx) $("cursorStat").textContent = `X ${fmtMM(mm(raw.x))} , Y ${fmtMM(mm(raw.y))}`;
+  else $("cursorStat").textContent = `${Math.round(raw.x)} , ${Math.round(raw.y)} px`;
+
+  if (measure && measure.p1) { measure.cur = snapPt(raw); render(); return; }
+  if (!drag) return;
+
+  if (drag.mode === "pan") {
+    state.panX = drag.px + (e.clientX - drag.sx);
+    state.panY = drag.py + (e.clientY - drag.sy);
+    applyTransform(); return;
+  }
+  if (drag.mode === "draw") { drag.cur = snapPt(raw); render(); return; }
+  if (drag.mode === "move") {
+    const s = getSel(); if (!s) return;
+    applyMove(s, drag.orig, raw.x - drag.start.x, raw.y - drag.start.y); render(); return;
+  }
+  if (drag.mode === "resize") {
+    const s = getSel(); if (!s) return;
+    applyResize(s, drag.orig, drag.handle, raw); render(); return;
+  }
+  if (drag.mode === "rotate") {
+    const s = getSel(); if (!s) return;
+    let ang = Math.atan2(raw.y - drag.ctr.y, raw.x - drag.ctr.x) * 180 / Math.PI + 90;
+    if (e.shiftKey) ang = Math.round(ang / 15) * 15; else ang = Math.round(ang);
+    s.rot = ((ang % 360) + 360) % 360;
+    render(); return;
+  }
+}
+
+function onUp() {
+  if (drag && drag.mode === "draw") { commitDraw(); setTool("select"); }
+  viewport.classList.remove("panning");
+  drag = null;
+  updateStatus();
+}
+
+/* ======================================================================
+   ツール切替・UI
+   ====================================================================== */
+const TOOL_BTN = { select: "tSelect", rect: "tRect", line: "tLine", text: "tText", pan: "tPan" };
+function setTool(t) {
+  state.tool = t;
+  measure = null;
+  for (const k in TOOL_BTN) $(TOOL_BTN[k]).classList.toggle("active", k === t);
+  $("calibrate").classList.remove("active");
+  $("measure").classList.remove("active");
+  if (t !== "fixture") { $("fixtureSel").value = ""; state._pendingFixture = null; }
+  viewport.className = (t === "pan") ? "pan" : (t === "select" ? "select" : "");
+  viewport.style.cursor = "";
+}
+
+function updateStatus() {
+  const st = $("scaleStat");
+  if (state.mmPerPx) {
+    st.className = "scaleOk";
+    const perM = (1000 / state.mmPerPx); // 1m = ? px
+    st.textContent = `縮尺：1px = ${state.mmPerPx.toFixed(2)}mm（1m ≒ ${Math.round(perM)}px）`;
+  } else {
+    st.className = "scaleNo";
+    st.textContent = "縮尺：未設定（「縮尺合わせ」で設定）";
+  }
+  $("countStat").textContent = `オブジェクト：${state.shapes.length}`;
+}
+
+/* ======================================================================
+   保存 / 読込 / 書き出し
+   ====================================================================== */
+function saveLayout() {
+  const data = {
+    version: 1, mmPerPx: state.mmPerPx, gridMm: state.gridMm,
+    worldW: state.worldW, worldH: state.worldH, shapes: state.shapes,
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "layout.json";
+  a.click();
+  toast("保存しました（layout.json）");
+}
+async function loadLayout(file) {
+  const txt = await file.text();
+  try {
+    const d = JSON.parse(txt);
+    state.shapes = d.shapes || [];
+    state.mmPerPx = d.mmPerPx || null;
+    state.gridMm = d.gridMm ?? state.gridMm;
+    $("gridSel").value = String(state.gridMm);
+    state.nextId = state.shapes.reduce((m, s) => Math.max(m, s.id || 0), 0) + 1;
+    state.selectedId = null;
+    updateStatus(); render();
+    toast("読み込みました（※同じPDFを開いておくと位置が合います）");
+  } catch (e) { toast("JSONの読込に失敗しました", true); }
+}
+
+function exportPNG() {
+  const out = document.createElement("canvas");
+  out.width = state.worldW; out.height = state.worldH;
+  const octx = out.getContext("2d");
+  octx.fillStyle = "#fff"; octx.fillRect(0, 0, out.width, out.height);
+  octx.drawImage(canvas, 0, 0);
+
+  // オーバーレイをクローンして選択ハンドルを除いた状態で書き出す
+  const clone = overlay.cloneNode(true);
+  clone.setAttribute("xmlns", SVGNS);
+  const xml = new XMLSerializer().serializeToString(clone);
+  const img = new Image();
+  img.onload = () => {
+    octx.drawImage(img, 0, 0, out.width, out.height);
+    const a = document.createElement("a");
+    a.href = out.toDataURL("image/png");
+    a.download = "layout.png";
+    a.click();
+    toast("PNGを書き出しました");
+  };
+  img.onerror = () => toast("画像化に失敗しました", true);
+  img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(xml)));
+}
+
+/* ======================================================================
+   イベント結線
+   ====================================================================== */
+function wire() {
+  // 什器セレクト
+  const fsel = $("fixtureSel");
+  let curGroup = null, gEl = null;
+  FIXTURES.forEach((f, i) => {
+    if (f.g && f.g !== curGroup) {
+      curGroup = f.g;
+      gEl = document.createElement("optgroup");
+      gEl.label = f.g;
+      fsel.appendChild(gEl);
+    }
+    const o = document.createElement("option");
+    o.value = String(i);
+    o.textContent = f.custom ? f.name : `${f.name}　(${f.w}×${f.h})`;
+    (f.g ? gEl : fsel).appendChild(o);
+  });
+  fsel.onchange = () => {
+    const v = fsel.value;
+    if (v === "") { setTool("select"); return; }
+    const def = FIXTURES[parseInt(v, 10)];
+    if (def.custom) {
+      const wi = prompt("幅 (mm)", "600"); if (wi === null) { fsel.value = ""; return; }
+      const hi = prompt("奥行 (mm)", "600"); if (hi === null) { fsel.value = ""; return; }
+      const nm = prompt("名称（任意）", "什器") || "";
+      const w = parseFloat(wi), h = parseFloat(hi);
+      if (isNaN(w) || isNaN(h)) { fsel.value = ""; return; }
+      state._pendingFixture = { name: nm, w, h, shape: "rect" };
+    } else {
+      state._pendingFixture = def;
+    }
+    setTool("fixture");
+    fsel.value = v;
+    toast(`「${state._pendingFixture.name || def.name}」を配置：図面上をクリック`);
+  };
+
+  // ファイル
+  $("pdfInput").onchange = (e) => openFile(e.target.files[0]);
+  $("loadInput").onchange = (e) => { if (e.target.files[0]) loadLayout(e.target.files[0]); };
+
+  // ページ
+  $("prevPage").onclick = () => { if (state.pdfDoc && state.pageNum > 1) { state.mmPerPx = null; renderPdfPage(state.pageNum - 1).then(() => { updateStatus(); zoomFit(); }); } };
+  $("nextPage").onclick = () => { if (state.pdfDoc && state.pageNum < state.pageCount) { state.mmPerPx = null; renderPdfPage(state.pageNum + 1).then(() => { updateStatus(); zoomFit(); }); } };
+
+  // ズーム
+  $("zoomIn").onclick = () => { const r = viewport.getBoundingClientRect(); zoomAt(1.2, r.left + r.width / 2, r.top + r.height / 2); };
+  $("zoomOut").onclick = () => { const r = viewport.getBoundingClientRect(); zoomAt(1 / 1.2, r.left + r.width / 2, r.top + r.height / 2); };
+  $("zoomFit").onclick = zoomFit;
+
+  // ツール
+  $("tSelect").onclick = () => setTool("select");
+  $("tRect").onclick = () => setTool("rect");
+  $("tLine").onclick = () => setTool("line");
+  $("tText").onclick = () => setTool("text");
+  $("tPan").onclick = () => setTool("pan");
+  $("calibrate").onclick = () => { startMeasure(true); $("calibrate").classList.add("active"); };
+  $("measure").onclick = () => { startMeasure(false); $("measure").classList.add("active"); };
+
+  // グリッド
+  $("gridSel").onchange = (e) => { state.gridMm = parseInt(e.target.value, 10); render(); };
+
+  // 保存系
+  $("saveBtn").onclick = saveLayout;
+  $("exportBtn").onclick = exportPNG;
+
+  // 削除系
+  $("deleteBtn").onclick = deleteSelected;
+  $("clearBtn").onclick = () => { if (confirm("作図したオブジェクトをすべて消去します。よろしいですか？")) { state.shapes = []; state.selectedId = null; hideSelInfo(); render(); updateStatus(); } };
+
+  // 回転ボタン
+  $("rotL").onclick = () => rotateSel(-15);
+  $("rotR").onclick = () => rotateSel(15);
+
+  // ポインタ
+  viewport.addEventListener("pointerdown", onDown);
+  document.addEventListener("pointermove", onMove);
+  document.addEventListener("pointerup", onUp);
+  viewport.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  // ホイールズーム
+  viewport.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX, e.clientY);
+  }, { passive: false });
+
+  // キーボード
+  window.addEventListener("keydown", onKey);
+  window.addEventListener("keyup", (e) => { if (e.code === "Space") spaceDown = false; });
+}
+
+function deleteSelected() {
+  if (!state.selectedId) return;
+  state.shapes = state.shapes.filter((s) => s.id !== state.selectedId);
+  state.selectedId = null; hideSelInfo(); render(); updateStatus();
+}
+function rotateSel(delta) {
+  const s = getSel(); if (!s) return;
+  s.rot = (((s.rot || 0) + delta) % 360 + 360) % 360;
+  render();
+}
+function nudge(dx, dy) {
+  const s = getSel(); if (!s) return;
+  const step = (state.gridMm > 0 && state.mmPerPx) ? state.gridMm / state.mmPerPx : 5;
+  if (s.type === "line") { s.x1 += dx * step; s.x2 += dx * step; s.y1 += dy * step; s.y2 += dy * step; }
+  else { s.x += dx * step; s.y += dy * step; }
+  render();
+}
+function onKey(e) {
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") return;
+  if (e.code === "Space") { spaceDown = true; viewport.classList.add("pan"); e.preventDefault(); return; }
+  switch (e.key) {
+    case "Delete": case "Backspace": deleteSelected(); e.preventDefault(); break;
+    case "Escape": setTool("select"); measure = null; state.selectedId = null; hideSelInfo(); render(); break;
+    case "v": case "V": setTool("select"); break;
+    case "r": if (getSel()) rotateSel(e.shiftKey ? -15 : 15); else setTool("rect"); break;
+    case "R": rotateSel(-15); break;
+    case "l": case "L": setTool("line"); break;
+    case "t": case "T": setTool("text"); break;
+    case "ArrowLeft": nudge(-1, 0); e.preventDefault(); break;
+    case "ArrowRight": nudge(1, 0); e.preventDefault(); break;
+    case "ArrowUp": nudge(0, -1); e.preventDefault(); break;
+    case "ArrowDown": nudge(0, 1); e.preventDefault(); break;
+  }
+  if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) { e.preventDefault(); saveLayout(); }
+}
+
+/* ---- init ---- */
+window.addEventListener("DOMContentLoaded", () => {
+  wire();
+  setSceneSize(1200, 800);
+  ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, 1200, 800);
+  applyTransform();
+  updateStatus();
+  render();
+  zoomFit();
+});

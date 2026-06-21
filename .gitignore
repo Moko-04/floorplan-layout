@@ -1,0 +1,12 @@
+# エディタ/OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ローカル設定（プレビュー等・端末固有）
+.claude/
+
+# ユーザーの書き出しファイル
+layout.json
+layout.png
+*.pdf
