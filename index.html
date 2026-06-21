@@ -14,10 +14,13 @@
     --danger:#ff5d6c; --warn:#ffb347;
   }
   *{box-sizing:border-box}
-  html,body{height:100%;margin:0}
+  html,body{height:100%;margin:0; overscroll-behavior:none;}
   body{
     font-family:"Segoe UI","Hiragino Kaku Gothic ProN","Meiryo",sans-serif;
-    background:var(--bg); color:var(--txt); display:flex; flex-direction:column; overflow:hidden;
+    background:var(--bg); color:var(--txt); display:flex; flex-direction:column;
+    overflow:hidden;
+    /* スマホでドラッグ中にページ全体がスクロール/引っ張られないよう固定 */
+    position:fixed; inset:0; width:100%; touch-action:none;
   }
   /* ---- toolbar ---- */
   .toolbar{
@@ -58,9 +61,9 @@
   #viewport.pan{cursor:grab}
   #viewport.panning{cursor:grabbing}
   #viewport.select{cursor:default}
-  #scene{position:absolute; top:0; left:0; transform-origin:0 0;}
+  #scene{position:absolute; top:0; left:0; transform-origin:0 0; touch-action:none;}
   #pdfCanvas{position:absolute; top:0; left:0; box-shadow:0 0 0 1px #000, 0 8px 40px rgba(0,0,0,.6); background:#fff;}
-  #overlay{position:absolute; top:0; left:0; overflow:visible;}
+  #overlay{position:absolute; top:0; left:0; overflow:visible; touch-action:none;}
   /* empty hint */
   #hint{
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center;

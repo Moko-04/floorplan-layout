@@ -83,6 +83,7 @@ let measure = null;       // 縮尺合わせ/計測 {p1, cur, forScale}
 let spaceDown = false;
 const activePointers = new Map(); // pointerId -> {x,y}（マルチタッチ判定用）
 let pinch = null;         // ピンチ拡大/2本指パンの基準
+const COARSE = !!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches); // タッチ主体端末か
 
 /* ======================================================================
    ユーティリティ
@@ -387,7 +388,7 @@ function renderSelection(s, z) {
   g.appendChild(svgEl("rect", { x: b.x, y: b.y, width: b.w, height: b.h, fill: "none",
     stroke: "#fff", "stroke-width": 1.2 / z, "stroke-dasharray": `${4 / z} ${3 / z}`, "pointer-events": "none" }));
 
-  const hs = 5 / z;
+  const hs = (COARSE ? 11 : 5) / z;   // タッチ端末ではハンドルを大きくして掴みやすく
   const resizable = (s.type === "rect" || s.type === "fixture" || s.type === "ellipse") && !s.rot;
   if (resizable) {
     const corners = [["nw", b.x, b.y], ["ne", b.x + b.w, b.y], ["sw", b.x, b.y + b.h], ["se", b.x + b.w, b.y + b.h]];
