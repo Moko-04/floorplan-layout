@@ -327,9 +327,10 @@ function renderDoor(g, s, sw, c) {
 }
 
 function addLabel(g, x, y, text, fs, c) {
-  const bg = svgEl("rect", { x: x - 1, y: y - fs, rx: 3 / state.zoom, fill: "rgba(17,20,28,.78)" });
+  // ラベルはタッチ/クリックを横取りしない（下の図形を掴めるように）
+  const bg = svgEl("rect", { x: x - 1, y: y - fs, rx: 3 / state.zoom, fill: "rgba(17,20,28,.78)", "pointer-events": "none" });
   const t = svgEl("text", { x: x, y: y - fs * 0.25, fill: "#fff", "font-size": fs,
-    "font-family": "sans-serif", "text-anchor": "middle" });
+    "font-family": "sans-serif", "text-anchor": "middle", "pointer-events": "none" });
   t.textContent = text;
   g.appendChild(bg); g.appendChild(t);
   // bg をテキスト幅に合わせる
@@ -685,6 +686,8 @@ function onDown(e) {
   if (e.button === 2) return;
   // 右上の選択パネル（入力欄・ボタン）上の操作はキャンバス処理の対象外にする
   if (e.target.closest && e.target.closest("#selInfo")) return;
+  // 新しい1本目のタッチが来たら、取りこぼした古いポインタを掃除（誤ピンチ防止）
+  if (e.pointerType === "touch" && e.isPrimary) { activePointers.clear(); pinch = null; }
   activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   // 指が2本になったらピンチ（拡大縮小＋2本指パン）に切替。進行中の操作は中断
   if (activePointers.size >= 2) {
@@ -729,8 +732,13 @@ function onDown(e) {
         drag = { mode: "move", start: raw, origs: snapshotGeoms() };
         render();
       }
+    } else if (COARSE && !e.shiftKey) {
+      // タッチ端末：何もない所の1本指ドラッグは画面移動（パン）。選択は維持。
+      // 動かさずに離した場合（タップ）は選択解除する
+      drag = { mode: "pan", sx: e.clientX, sy: e.clientY, px: state.panX, py: state.panY, selectTap: true };
+      viewport.classList.add("panning");
     } else {
-      // 空白でドラッグ → 範囲選択（マーキー）
+      // マウス等：空白ドラッグは範囲選択（マーキー）
       drag = { mode: "marquee", start: raw, cur: raw, add: e.shiftKey };
       if (!e.shiftKey) { clearSelection(); hideSelInfo(); }
       render();
@@ -769,8 +777,10 @@ function onMove(e) {
   if (!drag) return;
 
   if (drag.mode === "pan") {
-    state.panX = drag.px + (e.clientX - drag.sx);
-    state.panY = drag.py + (e.clientY - drag.sy);
+    const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.moved = true;
+    state.panX = drag.px + dx;
+    state.panY = drag.py + dy;
     applyTransform(); return;
   }
   if (drag.mode === "draw") { drag.cur = snapPt(raw); render(); return; }
@@ -804,6 +814,7 @@ function onUp(e) {
   if (drag) {
     if (drag.mode === "draw") { commitDraw(); setTool("select"); }
     else if (drag.mode === "marquee") { finishMarquee(); }
+    else if (drag.mode === "pan" && drag.selectTap && !drag.moved) { clearSelection(); hideSelInfo(); render(); }
     else if (drag.moved && (drag.mode === "move" || drag.mode === "resize" || drag.mode === "rotate")) { pushHistory(); }
   }
   viewport.classList.remove("panning");
