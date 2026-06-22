@@ -125,6 +125,29 @@
   @media (hover:none){
     button:hover,.filebtn:hover,select:hover{border-color:var(--line)}
   }
+  /* ---- 寸法入力ダイアログ ---- */
+  #dimDialog{position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    background:rgba(10,12,18,.55); z-index:40;
+    /* viewportの touch-action:none を打消し、タッチで入力・タップ可能に */
+    touch-action:auto; -webkit-user-select:auto; user-select:auto;}
+  #dimDialog.show{display:flex}
+  #dimDialog .dlg{background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    padding:20px 22px; width:300px; max-width:88vw; box-shadow:0 20px 60px rgba(0,0,0,.5);}
+  .dlgTitle{font-size:15px; font-weight:700; margin-bottom:4px}
+  .dlgSub{font-size:12px; color:var(--muted); margin-bottom:14px}
+  .dlgInput{display:flex; align-items:center; gap:8px; margin-bottom:12px}
+  .dlgInput input{flex:1; min-width:0; background:var(--panel2); border:1px solid var(--line); color:var(--txt);
+    border-radius:8px; padding:12px; font-size:22px; text-align:right; font-weight:700;
+    -webkit-user-select:text; user-select:text; touch-action:auto;}
+  .dlgInput input:focus{outline:none; border-color:var(--accent)}
+  .dlgInput span{font-size:14px; color:var(--muted)}
+  .dlgChips{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px}
+  .dlgChips button{background:var(--panel2); border:1px solid var(--line); color:var(--muted);
+    border-radius:16px; padding:6px 11px; font-size:12px}
+  .dlgChips button:hover{color:var(--txt); border-color:var(--accent)}
+  .dlgBtns{display:flex; gap:8px}
+  .dlgBtns button{flex:1; justify-content:center; padding:12px}
+  .dlgBtns .primary{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:700}
 </style>
 </head>
 <body>
@@ -154,8 +177,8 @@
 
     <div class="group">
       <span class="lbl">縮尺</span>
-      <button id="calibrate" title="図面上の既知の長さを2点クリックして実寸を入力">📏 縮尺合わせ</button>
-      <button id="measure" class="ghost" title="2点間の実寸を計測">計測</button>
+      <button id="calibrate" title="図面上の既知の長さをドラッグで線引き→実寸を入力">📏 縮尺合わせ</button>
+      <button id="measure" class="ghost" title="2点間をドラッグして実寸を計測">計測</button>
     </div>
 
     <div class="group">
@@ -217,7 +240,7 @@
       <div class="card">
         <b>図面レイアウトツール</b><br>
         ① <b>「PDFを開く」</b>で図面を読み込む<br>
-        ② <b>「縮尺合わせ」</b>で既知の寸法を2点クリック→実寸を入力<br>
+        ② <b>「縮尺合わせ」</b>で既知の寸法をドラッグして線を引く→実寸(mm)を入力<br>
         ③ 什器を選んで配置、矩形・壁を描いて造作レイアウト<br>
         <span style="font-size:12px;color:var(--muted)">※ PDFが無くても、縮尺を「1000mm」などで仮設定すれば白紙から作図できます<br>
         📱 スマホ：2本指でピンチ拡大・スクロール／1本指で選択・移動。✋ツールで画面移動</span>
@@ -225,6 +248,22 @@
     </div>
 
     <div id="toast" class="toast"></div>
+
+    <div id="dimDialog">
+      <div class="dlg">
+        <div class="dlgTitle">この線の実寸を入力</div>
+        <div class="dlgSub" id="dimSub">図面上の長さ： — px</div>
+        <div class="dlgInput">
+          <input id="dimValue" type="number" inputmode="decimal" min="1" step="1" value="1000">
+          <span>mm</span>
+        </div>
+        <div class="dlgChips" id="dimChips"></div>
+        <div class="dlgBtns">
+          <button id="dimCancel" class="ghost">キャンセル</button>
+          <button id="dimOk" class="primary">この寸法で合わせる</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="status">

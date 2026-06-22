@@ -653,30 +653,48 @@ function startMeasure(forScale) {
   measure = { p1: null, cur: null, forScale };
   viewport.classList.remove("select");
   viewport.style.cursor = "crosshair";
-  toast(forScale ? "既知の寸法の2点をクリック" : "計測：2点をクリック");
+  $(forScale ? "calibrate" : "measure").classList.add("active");
+  toast(forScale ? "図面上の既知の長さをドラッグで線引き" : "計測：2点間をドラッグ");
 }
-function handleMeasureClick(pt) {
-  if (!measure.p1) { measure.p1 = pt; measure.cur = pt; render(); return; }
-  const px = Math.hypot(pt.x - measure.p1.x, pt.y - measure.p1.y);
-  if (px < 2) return;
+
+/* ドラッグで引いた線を確定 → 縮尺なら寸法入力ダイアログ、計測なら結果表示 */
+function finishMeasure() {
+  if (!measure || !measure.p1 || !measure.cur) { measure = null; return; }
+  const px = Math.hypot(measure.cur.x - measure.p1.x, measure.cur.y - measure.p1.y);
+  if (px < 3) { measure = null; render(); toast("線が短すぎます。もう一度ドラッグしてください", true); return; }
   if (measure.forScale) {
-    const ans = prompt("この2点間の実際の長さを入力（mm）\n例：壁の長さ2000mm、ドア幅900mm など", "1000");
-    if (ans !== null) {
-      const realMM = parseFloat(ans);
-      if (!isNaN(realMM) && realMM > 0) {
-        state.mmPerPx = realMM / px;
-        toast(`縮尺を設定：1px = ${state.mmPerPx.toFixed(2)}mm`);
-      }
-    }
+    measure.px = px;      // 線は表示したままダイアログを出す
+    render();
+    showDimDialog(px);
   } else {
-    measure.cur = pt; render();
-    setTimeout(() => toast(`計測：${fmtMM(mm(px))}`), 0);
+    toast(`計測：${fmtMM(mm(px))}`);
+    measure = null; render(); setTool("select");
   }
+}
+
+/* 寸法入力ダイアログ */
+function showDimDialog(px) {
+  $("dimSub").textContent = `図面上の長さ：約 ${Math.round(px)} px`;
+  $("dimDialog").classList.add("show");
+  const inp = $("dimValue");
+  setTimeout(() => { inp.focus(); inp.select(); }, 30);
+}
+function closeDimDialog() { $("dimDialog").classList.remove("show"); }
+function isDimOpen() { return $("dimDialog").classList.contains("show"); }
+function confirmDim() {
+  const v = parseFloat($("dimValue").value);
+  if (isNaN(v) || v <= 0) { toast("正しい寸法(mm)を入力してください", true); return; }
+  if (!measure || !measure.px) { closeDimDialog(); return; }
+  state.mmPerPx = v / measure.px;
+  closeDimDialog();
   measure = null;
-  updateStatus();
-  scheduleAutosave();
-  setTool("select");
-  render();
+  updateStatus(); render(); scheduleAutosave(); setTool("select");
+  toast(`縮尺を設定しました（1m ≒ ${Math.round(1000 / state.mmPerPx)}px）`);
+}
+function cancelDim() {
+  closeDimDialog();
+  measure = null;
+  render(); setTool("select");
 }
 
 /* ======================================================================
@@ -684,6 +702,7 @@ function handleMeasureClick(pt) {
    ====================================================================== */
 function onDown(e) {
   if (e.button === 2) return;
+  if (isDimOpen()) return;   // 寸法入力ダイアログ表示中はキャンバス操作を無効化
   // 右上の選択パネル（入力欄・ボタン）上の操作はキャンバス処理の対象外にする
   if (e.target.closest && e.target.closest("#selInfo")) return;
   // 新しい1本目のタッチが来たら、取りこぼした古いポインタを掃除（誤ピンチ防止）
@@ -705,8 +724,14 @@ function onDown(e) {
     e.preventDefault(); return;
   }
 
-  // 縮尺合わせ / 計測
-  if (measure) { handleMeasureClick(snapPt(raw)); return; }
+  // 縮尺合わせ / 計測：ドラッグで線を引く
+  if (measure) {
+    measure.p1 = raw; measure.cur = raw;
+    drag = { mode: "measureDraw" };
+    render();
+    e.preventDefault();
+    return;
+  }
 
   const handle = e.target.getAttribute && e.target.getAttribute("data-handle");
   const sel = getSel();
@@ -773,9 +798,9 @@ function onMove(e) {
   if (state.mmPerPx) $("cursorStat").textContent = `X ${fmtMM(mm(raw.x))} , Y ${fmtMM(mm(raw.y))}`;
   else $("cursorStat").textContent = `${Math.round(raw.x)} , ${Math.round(raw.y)} px`;
 
-  if (measure && measure.p1) { measure.cur = snapPt(raw); render(); return; }
   if (!drag) return;
 
+  if (drag.mode === "measureDraw") { measure.cur = raw; render(); return; }
   if (drag.mode === "pan") {
     const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.moved = true;
@@ -811,6 +836,10 @@ function onUp(e) {
     return;
   }
   pinch = null;
+  if (drag && drag.mode === "measureDraw") {
+    drag = null; viewport.classList.remove("panning");
+    finishMeasure(); updateStatus(); return;
+  }
   if (drag) {
     if (drag.mode === "draw") { commitDraw(); setTool("select"); }
     else if (drag.mode === "marquee") { finishMarquee(); }
@@ -995,8 +1024,24 @@ function wire() {
   $("tLine").onclick = () => setTool("line");
   $("tText").onclick = () => setTool("text");
   $("tPan").onclick = () => setTool("pan");
-  $("calibrate").onclick = () => { startMeasure(true); $("calibrate").classList.add("active"); };
-  $("measure").onclick = () => { startMeasure(false); $("measure").classList.add("active"); };
+  $("calibrate").onclick = () => startMeasure(true);
+  $("measure").onclick = () => startMeasure(false);
+
+  // 寸法入力ダイアログ
+  $("dimOk").onclick = confirmDim;
+  $("dimCancel").onclick = cancelDim;
+  $("dimValue").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); confirmDim(); }
+    else if (e.key === "Escape") { e.preventDefault(); cancelDim(); }
+  });
+  $("dimDialog").addEventListener("pointerdown", (e) => { if (e.target.id === "dimDialog") cancelDim(); });
+  const chips = $("dimChips");
+  [["ドア900", 900], ["1m", 1000], ["1間1820", 1820], ["2m", 2000], ["2間3640", 3640]].forEach(([label, val]) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.onclick = () => { const inp = $("dimValue"); inp.value = val; inp.focus(); };
+    chips.appendChild(b);
+  });
 
   // グリッド
   $("gridSel").onchange = (e) => { state.gridMm = parseInt(e.target.value, 10); render(); scheduleAutosave(); };
