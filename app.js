@@ -341,7 +341,24 @@ function addLabel(g, x, y, text, fs, c) {
   });
 }
 function addRectDims(g, s, fs, c) {
-  addLabel(g, s.x + s.w / 2, s.y + s.h / 2 + fs / 2, `${fmtMM(mm(s.w))} × ${fmtMM(mm(s.h))}`, fs, c);
+  const cx = s.x + s.w / 2, cy = s.y + s.h / 2;
+  addLabel(g, cx, cy, `${fmtMM(mm(s.w))} × ${fmtMM(mm(s.h))}`, fs, c);
+  const a = areaStr(mm(s.w), mm(s.h));
+  if (a) addLabel(g, cx, cy + fs * 1.4, a, fs * 0.92, c);
+}
+
+/* ---- 面積・坪数 ---- */
+const SQM_PER_TSUBO = 3.305785;   // 1坪 = 約3.306㎡
+function areaStr(mmW, mmH) {
+  if (mmW == null || mmH == null) return null;
+  const sqm = (mmW / 1000) * (mmH / 1000);
+  if (!(sqm > 0)) return null;
+  return sqmStr(sqm);
+}
+function sqmStr(sqm) {
+  const tsubo = sqm / SQM_PER_TSUBO;
+  const m = sqm < 100 ? sqm.toFixed(2) : sqm.toFixed(1);
+  return `${m}㎡ ・ ${tsubo.toFixed(2)}坪`;
 }
 function addFixtureLabel(g, s, fs) {
   const cx = s.x + s.w / 2, cy = s.y + s.h / 2;
@@ -445,6 +462,10 @@ function showSelInfo(s) {
     if (s.type !== "door")
       html += `<div class="row"><label>奥行</label><input id="iH" type="number" inputmode="decimal" step="10" value="${Math.round(mm(s.h) || 0)}"> <span style="color:var(--muted)">mm</span></div>`;
     html += `<div class="row"><label>角度</label><span>${Math.round(s.rot || 0)}°</span></div>`;
+    if (s.type === "rect") {
+      const a = areaStr(mm(s.w), mm(s.h));
+      if (a) html += `<div class="row"><label>面積</label><span>${a}</span></div>`;
+    }
   }
   body.innerHTML = html;
 
@@ -911,6 +932,18 @@ function updateStatus() {
     st.textContent = "縮尺：未設定（「縮尺合わせ」で設定）";
   }
   $("countStat").textContent = `オブジェクト：${state.shapes.length}`;
+
+  const as = $("areaStat");
+  if (as) {
+    const rects = state.shapes.filter((s) => s.type === "rect");
+    if (!state.mmPerPx) as.textContent = "面積：縮尺未設定";
+    else if (!rects.length) as.textContent = "部屋面積合計：—（矩形で部屋を描く）";
+    else {
+      let total = 0;
+      for (const s of rects) { const a = (mm(s.w) / 1000) * (mm(s.h) / 1000); if (a > 0) total += a; }
+      as.textContent = `部屋面積合計：${sqmStr(total)}`;
+    }
+  }
 }
 
 /* ======================================================================
