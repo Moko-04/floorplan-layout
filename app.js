@@ -342,9 +342,15 @@ function addLabel(g, x, y, text, fs, c) {
 }
 function addRectDims(g, s, fs, c) {
   const cx = s.x + s.w / 2, cy = s.y + s.h / 2;
-  addLabel(g, cx, cy, `${fmtMM(mm(s.w))} × ${fmtMM(mm(s.h))}`, fs, c);
+  // 名称があれば最上段に、続けて寸法・面積を縦に重ねて中央寄せ表示
+  const lines = [];
+  if (s.name) lines.push({ t: s.name, fs: fs * 1.08 });
+  lines.push({ t: `${fmtMM(mm(s.w))} × ${fmtMM(mm(s.h))}`, fs: fs });
   const a = areaStr(mm(s.w), mm(s.h));
-  if (a) addLabel(g, cx, cy + fs * 1.4, a, fs * 0.92, c);
+  if (a) lines.push({ t: a, fs: fs * 0.9 });
+  const gap = fs * 1.35;
+  const startY = cy - ((lines.length - 1) * gap) / 2 + fs * 0.35;
+  lines.forEach((ln, i) => addLabel(g, cx, startY + i * gap, ln.t, ln.fs, c));
 }
 
 /* ---- 面積・坪数 ---- */
