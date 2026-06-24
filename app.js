@@ -294,11 +294,11 @@ function renderShape(s, sw, fs) {
       stroke: c, "stroke-width": (s.weight || 4) / state.zoom, "stroke-linecap": "round",
       "data-id": s.id, style: "cursor:move" }));
     const len = Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
-    addLabel(g, (s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2, fmtMM(mm(len)), fs, c);
+    if (!s.hideLabel) addLabel(g, (s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2, fmtMM(mm(len)), fs, c);
   } else if (s.type === "ellipse") {
     g.appendChild(svgEl("ellipse", { cx: s.x + s.w / 2, cy: s.y + s.h / 2, rx: s.w / 2, ry: s.h / 2,
       fill: c + "33", stroke: c, "stroke-width": sw, "data-id": s.id, style: "cursor:move" }));
-    addFixtureLabel(g, s, fs);
+    if (!s.hideLabel) addFixtureLabel(g, s, fs);
   } else if (s.type === "door") {
     renderDoor(g, s, sw, c);
   } else if (s.type === "text") {
@@ -310,8 +310,8 @@ function renderShape(s, sw, fs) {
     g.appendChild(svgEl("rect", { x: s.x, y: s.y, width: s.w, height: s.h, rx: 2 / state.zoom,
       fill: c + (s.type === "fixture" ? "33" : "22"), stroke: c, "stroke-width": sw,
       "data-id": s.id, style: "cursor:move" }));
-    if (s.type === "fixture") addFixtureLabel(g, s, fs);
-    else addRectDims(g, s, fs, c);
+    if (s.type === "fixture") { if (!s.hideLabel) addFixtureLabel(g, s, fs); }
+    else if (!s.hideLabel) addRectDims(g, s, fs, c);
   }
   overlay.appendChild(g);
 }
@@ -467,6 +467,10 @@ function showSelInfo(s) {
       if (a) html += `<div class="row"><label>面積</label><span>${a}</span></div>`;
     }
   }
+  // 寸法・ラベルの表示切替（ラベルを持つ図形のみ）
+  if (["line", "ellipse", "fixture", "rect"].includes(s.type)) {
+    html += `<div class="row"><label>寸法表示</label><input type="checkbox" id="iLabel" ${s.hideLabel ? "" : "checked"} style="flex:0 0 auto;width:auto;margin:0"> <span style="color:var(--muted)">図面に表示</span></div>`;
+  }
   body.innerHTML = html;
 
   const cr = $("colorRow"); cr.innerHTML = "";
@@ -484,6 +488,7 @@ function showSelInfo(s) {
   bindNum("iH", (px) => { s.h = px; });
   const nm = $("iName"); if (nm) nm.onchange = () => { s.name = nm.value; render(); pushHistory(); };
   const tx = $("iTxt"); if (tx) tx.onchange = () => { s.text = tx.value; render(); pushHistory(); };
+  const lab = $("iLabel"); if (lab) lab.onchange = () => { s.hideLabel = !lab.checked; render(); updateStatus(); pushHistory(); };
 }
 function hideSelInfo() { $("selInfo").style.display = "none"; }
 
@@ -935,7 +940,7 @@ function updateStatus() {
 
   const as = $("areaStat");
   if (as) {
-    const rects = state.shapes.filter((s) => s.type === "rect");
+    const rects = state.shapes.filter((s) => s.type === "rect" && !s.hideLabel);
     if (!state.mmPerPx) as.textContent = "面積：縮尺未設定";
     else if (!rects.length) as.textContent = "部屋面積合計：—（矩形で部屋を描く）";
     else {
